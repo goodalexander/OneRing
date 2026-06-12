@@ -357,12 +357,15 @@ pub fn build_exec_request(
     let enforce_managed_network = network.is_some();
     let (file_system_sandbox_policy, network_sandbox_policy) =
         permission_profile.to_runtime_permissions();
-    let sandbox_type = select_process_exec_tool_sandbox_type(
+    let mut sandbox_type = select_process_exec_tool_sandbox_type(
         &file_system_sandbox_policy,
         network_sandbox_policy,
         windows_sandbox_level,
         enforce_managed_network,
     );
+    if use_legacy_landlock && sandbox_type == SandboxType::LinuxBubblewrap {
+        sandbox_type = SandboxType::LinuxLegacyLandlock;
+    }
     tracing::debug!("Sandbox type: {sandbox_type:?}");
 
     if let Some(network) = network.as_ref() {
@@ -404,7 +407,6 @@ pub fn build_exec_request(
             network: network.as_ref(),
             sandbox_policy_cwd: &sandbox_policy_cwd_uri,
             codex_linux_sandbox_exe: codex_linux_sandbox_exe.as_deref(),
-            use_legacy_landlock,
             windows_sandbox_level,
             windows_sandbox_private_desktop,
         })
@@ -866,8 +868,10 @@ pub(crate) fn is_likely_sandbox_denied(
     #[cfg(unix)]
     {
         const SIGSYS_CODE: i32 = libc::SIGSYS;
-        if sandbox_type == SandboxType::LinuxSeccomp
-            && exec_output.exit_code == EXIT_CODE_SIGNAL_BASE + SIGSYS_CODE
+        if matches!(
+            sandbox_type,
+            SandboxType::LinuxBubblewrap | SandboxType::LinuxLegacyLandlock
+        ) && exec_output.exit_code == EXIT_CODE_SIGNAL_BASE + SIGSYS_CODE
         {
             return true;
         }

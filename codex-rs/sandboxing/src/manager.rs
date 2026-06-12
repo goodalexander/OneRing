@@ -25,17 +25,19 @@ use std::path::Path;
 pub enum SandboxType {
     None,
     MacosSeatbelt,
-    LinuxSeccomp,
+    LinuxBubblewrap,
+    LinuxLegacyLandlock,
     WindowsRestrictedToken,
 }
 
 impl SandboxType {
-    pub fn as_metric_tag(self) -> &'static str {
+    pub const fn as_metric_tag(self) -> &'static str {
         match self {
-            SandboxType::None => "none",
-            SandboxType::MacosSeatbelt => "seatbelt",
-            SandboxType::LinuxSeccomp => "seccomp",
-            SandboxType::WindowsRestrictedToken => "windows_sandbox",
+            Self::None => "none",
+            Self::MacosSeatbelt => "seatbelt",
+            Self::LinuxBubblewrap => "bubblewrap",
+            Self::LinuxLegacyLandlock => "legacy_landlock",
+            Self::WindowsRestrictedToken => "windows_sandbox",
         }
     }
 }
@@ -51,7 +53,7 @@ pub fn get_platform_sandbox(windows_sandbox_enabled: bool) -> Option<SandboxType
     if cfg!(target_os = "macos") {
         Some(SandboxType::MacosSeatbelt)
     } else if cfg!(target_os = "linux") {
-        Some(SandboxType::LinuxSeccomp)
+        Some(SandboxType::LinuxBubblewrap)
     } else if cfg!(target_os = "windows") {
         if windows_sandbox_enabled {
             Some(SandboxType::WindowsRestrictedToken)
@@ -126,7 +128,6 @@ pub struct SandboxTransformRequest<'a> {
     pub network: Option<&'a NetworkProxy>,
     pub sandbox_policy_cwd: &'a PathUri,
     pub codex_linux_sandbox_exe: Option<&'a Path>,
-    pub use_legacy_landlock: bool,
     pub windows_sandbox_level: WindowsSandboxLevel,
     pub windows_sandbox_private_desktop: bool,
 }
@@ -235,10 +236,10 @@ impl SandboxManager {
             network,
             sandbox_policy_cwd,
             codex_linux_sandbox_exe,
-            use_legacy_landlock,
             windows_sandbox_level,
             windows_sandbox_private_desktop,
         } = request;
+        let use_legacy_landlock = sandbox == SandboxType::LinuxLegacyLandlock;
         let native_command_cwd = command.cwd.to_abs_path().map_err(|source| {
             SandboxTransformError::InvalidCommandCwd {
                 cwd: command.cwd.clone(),
@@ -291,7 +292,7 @@ impl SandboxManager {
             }
             #[cfg(not(target_os = "macos"))]
             SandboxType::MacosSeatbelt => return Err(SandboxTransformError::SeatbeltUnavailable),
-            SandboxType::LinuxSeccomp => {
+            SandboxType::LinuxBubblewrap | SandboxType::LinuxLegacyLandlock => {
                 let exe = codex_linux_sandbox_exe
                     .ok_or(SandboxTransformError::MissingLinuxSandboxExecutable)?;
                 let allow_proxy_network = allow_network_for_proxy(enforce_managed_network);

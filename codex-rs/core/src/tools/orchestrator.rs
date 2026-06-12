@@ -225,6 +225,7 @@ impl ToolOrchestrator {
             &file_system_sandbox_policy,
         );
         let managed_network_active = turn_ctx.network.is_some();
+        let use_legacy_landlock = turn_ctx.features.use_legacy_landlock();
         let initial_sandbox = match sandbox_override {
             SandboxOverride::BypassSandboxFirstAttempt => SandboxType::None,
             SandboxOverride::NoOverride => self.sandbox.select_initial(
@@ -235,9 +236,14 @@ impl ToolOrchestrator {
                 managed_network_active,
             ),
         };
+        let initial_sandbox =
+            if use_legacy_landlock && initial_sandbox == SandboxType::LinuxBubblewrap {
+                SandboxType::LinuxLegacyLandlock
+            } else {
+                initial_sandbox
+            };
 
         // Platform-specific flag gating is handled by SandboxManager::select_initial.
-        let use_legacy_landlock = turn_ctx.features.use_legacy_landlock();
         #[allow(deprecated)]
         let sandbox_cwd = tool.sandbox_cwd(req).unwrap_or(&turn_ctx.cwd);
         let sandbox_policy_cwd = PathUri::from_abs_path(sandbox_cwd).map_err(|_| {
@@ -414,6 +420,12 @@ impl ToolOrchestrator {
                         managed_network_active,
                     )
                 };
+                let retry_sandbox =
+                    if use_legacy_landlock && retry_sandbox == SandboxType::LinuxBubblewrap {
+                        SandboxType::LinuxLegacyLandlock
+                    } else {
+                        retry_sandbox
+                    };
                 let retry_codex_linux_sandbox_exe = if unsandboxed_allowed {
                     None
                 } else {
