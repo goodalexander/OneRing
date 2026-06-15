@@ -4783,10 +4783,19 @@ async fn remote_v2_compaction_keeps_creation_time_instructions_after_same_path_m
     assert_single_instruction_fragment(&requests[0], &old_fragment);
     assert_single_instruction_fragment(&requests[1], &old_fragment);
     assert_single_instruction_fragment(&requests[2], &old_fragment);
+    let compact_input = requests[1].input();
+    let compaction_trigger = compact_input
+        .last()
+        .expect("remote-v2 compact request should append a compaction trigger");
     assert_eq!(
-        requests[1].input().last(),
-        Some(&json!({"type": "compaction_trigger"})),
+        compaction_trigger["type"].as_str(),
+        Some("compaction_trigger"),
         "remote-v2 compact request should append exactly one compaction trigger"
+    );
+    assert_eq!(
+        compaction_trigger["metadata"]["turn_id"].as_str(),
+        requests[1].body_json()["client_metadata"]["turn_id"].as_str(),
+        "remote-v2 compact request should stamp the trigger with the active turn id"
     );
     let rollout_path = test.codex.rollout_path().expect("rollout path");
     let replacement_history = replacement_history_from_rollout(&rollout_path)?;

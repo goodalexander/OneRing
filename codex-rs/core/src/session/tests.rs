@@ -206,6 +206,17 @@ fn assistant_message(text: &str) -> ResponseItem {
     }
 }
 
+async fn persisted_resumed_history(session: &Session, rollout_path: &Path) -> ResumedHistory {
+    session.flush_rollout().await.expect("rollout should flush");
+    let InitialHistory::Resumed(resumed) = RolloutRecorder::get_rollout_history(rollout_path)
+        .await
+        .expect("read rollout history")
+    else {
+        panic!("expected resumed rollout history");
+    };
+    resumed
+}
+
 fn test_session_telemetry_without_metadata() -> SessionTelemetry {
     let exporter = InMemoryMetricExporter::default();
     let metrics = MetricsClient::new(
@@ -1650,6 +1661,110 @@ async fn record_initial_history_reconstructs_resumed_transcript() {
 }
 
 #[tokio::test]
+async fn record_conversation_items_sets_missing_turn_id_and_preserves_existing_turn_id() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    let rollout_path = attach_thread_persistence(&mut session).await;
+    let fresh_item = ResponseItem::Message {
+        id: None,
+        role: "user".to_string(),
+        content: vec![ContentItem::InputText {
+            text: "fresh".to_string(),
+        }],
+        phase: None,
+        metadata: None,
+    };
+    let existing_item = ResponseItem::Message {
+        id: None,
+        role: "assistant".to_string(),
+        content: vec![ContentItem::OutputText {
+            text: "existing".to_string(),
+        }],
+        phase: None,
+        metadata: Some(ResponseItemMetadata {
+            turn_id: Some("older-turn".to_string()),
+        }),
+    };
+
+    session
+        .record_conversation_items(&turn_context, &[fresh_item.clone(), existing_item.clone()])
+        .await;
+
+    let mut expected_fresh_item = fresh_item;
+    expected_fresh_item.set_turn_id_if_missing(&turn_context.sub_id);
+    let expected_items = vec![expected_fresh_item, existing_item];
+    assert_eq!(
+        session.clone_history().await.raw_items(),
+        expected_items.as_slice()
+    );
+
+    let resumed = persisted_resumed_history(&session, &rollout_path).await;
+    let persisted_items = resumed
+        .history
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::ResponseItem(item) => Some(item.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(persisted_items, expected_items);
+
+    let (resumed_session, _resumed_turn_context) = make_session_and_context().await;
+    resumed_session
+        .record_initial_history(InitialHistory::Resumed(resumed))
+        .await;
+    assert_eq!(
+        resumed_session.clone_history().await.raw_items(),
+        expected_items.as_slice()
+    );
+}
+
+#[tokio::test]
+async fn record_inter_agent_communication_sets_turn_id_in_rollout_and_resume() {
+    let (mut session, turn_context) = make_session_and_context().await;
+    let rollout_path = attach_thread_persistence(&mut session).await;
+    let communication = InterAgentCommunication::new(
+        AgentPath::root().join("worker").expect("worker path"),
+        AgentPath::root(),
+        Vec::new(),
+        "child done".to_string(),
+        /*trigger_turn*/ false,
+    );
+    let mut expected_item = communication.to_model_input_item();
+    expected_item.set_turn_id_if_missing(&turn_context.sub_id);
+    let mut expected_communication = communication.clone();
+    expected_communication.set_turn_id_if_missing(&turn_context.sub_id);
+
+    session
+        .record_inter_agent_communication(&turn_context, communication)
+        .await;
+
+    assert_eq!(
+        session.clone_history().await.raw_items(),
+        std::slice::from_ref(&expected_item)
+    );
+
+    let resumed = persisted_resumed_history(&session, &rollout_path).await;
+    let persisted_communications = resumed
+        .history
+        .iter()
+        .filter_map(|item| match item {
+            RolloutItem::InterAgentCommunication(communication) => Some(communication.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(persisted_communications, vec![expected_communication]);
+
+    let (resumed_session, _resumed_turn_context) = make_session_and_context().await;
+    resumed_session
+        .record_initial_history(InitialHistory::Resumed(resumed))
+        .await;
+    assert_eq!(
+        resumed_session.clone_history().await.raw_items(),
+        std::slice::from_ref(&expected_item)
+    );
+}
+
+#[tokio::test]
 async fn resize_all_images_prepares_failures_before_history_insertion() {
     let (session, turn_context, _rx) = make_session_and_context_with_auth_and_config_and_rx(
         CodexAuth::from_api_key("Test API Key"),
@@ -1684,7 +1799,7 @@ async fn resize_all_images_prepares_failures_before_history_insertion() {
         .record_conversation_items(turn_context.as_ref(), std::slice::from_ref(&item))
         .await;
 
-    let expected = vec![ResponseItem::FunctionCallOutput {
+    let mut expected = vec![ResponseItem::FunctionCallOutput {
         call_id: "call-1".to_string(),
         output: FunctionCallOutputPayload {
             body: FunctionCallOutputBody::ContentItems(vec![
@@ -1703,6 +1818,7 @@ async fn resize_all_images_prepares_failures_before_history_insertion() {
         },
         metadata: None,
     }];
+    turn_context.set_response_item_turn_ids_if_missing(&mut expected);
     assert_eq!(
         session.state.lock().await.clone_history().raw_items(),
         expected.as_slice()
@@ -7960,7 +8076,8 @@ async fn handle_output_item_done_records_image_save_history_message() {
             image_output_path.display(),
         ),
     );
-    let expected = vec![image_message, item];
+    let mut expected = vec![image_message, item];
+    turn_context.set_response_item_turn_ids_if_missing(&mut expected);
     assert_eq!(history.raw_items(), expected.as_slice());
     assert_eq!(
         std::fs::read(&expected_saved_path).expect("saved file"),
@@ -8003,7 +8120,8 @@ async fn handle_output_item_done_skips_image_save_message_when_save_fails() {
         .expect("image generation item should still complete");
 
     let history = session.clone_history().await;
-    let expected = vec![item];
+    let mut expected = vec![item];
+    turn_context.set_response_item_turn_ids_if_missing(&mut expected);
     assert_eq!(history.raw_items(), expected.as_slice());
     assert!(!expected_saved_path.exists());
 }
@@ -8739,7 +8857,7 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
         .await;
 
     let history = sess.clone_history().await;
-    let expected = ResponseItem::Message {
+    let mut expected = ResponseItem::Message {
         id: None,
         role: "user".to_string(),
         content: vec![ContentItem::InputText {
@@ -8748,6 +8866,7 @@ async fn task_finish_emits_turn_item_lifecycle_for_leftover_pending_user_input()
         phase: None,
         metadata: None,
     };
+    expected.set_turn_id_if_missing(&tc.sub_id);
     assert!(
         history.raw_items().iter().any(|item| item == &expected),
         "expected pending input to be persisted into history on turn completion"

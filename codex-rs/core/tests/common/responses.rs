@@ -1043,6 +1043,23 @@ pub async fn mount_compact_user_history_with_summary_once(
     mount_compact_user_history_with_summary_sequence(server, vec![summary_text.to_string()]).await
 }
 
+pub fn without_item_metadata(mut input: Value) -> Value {
+    strip_item_metadata(
+        input
+            .as_array_mut()
+            .expect("response input should be an array"),
+    );
+    input
+}
+
+pub fn strip_item_metadata(items: &mut [Value]) {
+    for item in items {
+        if let Some(item) = item.as_object_mut() {
+            item.remove("metadata");
+        }
+    }
+}
+
 /// Same as [`mount_compact_user_history_with_summary_once`], but for multiple compact calls.
 /// Each incoming compact request receives the next summary text in order.
 pub async fn mount_compact_user_history_with_summary_sequence(
@@ -1092,11 +1109,26 @@ pub async fn mount_compact_user_history_with_summary_sequence(
                         )
                 })
                 .collect::<Vec<Value>>();
-            // Append a synthetic compaction item as the newest item.
-            output.push(serde_json::json!({
+            let compaction_turn_id = request
+                .headers
+                .get("x-codex-turn-metadata")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| serde_json::from_str::<Value>(value).ok())
+                .and_then(|metadata| {
+                    metadata
+                        .get("turn_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                });
+            // Match Responses API: generated compaction items inherit the compact request turn.
+            let mut compaction_item = serde_json::json!({
                 "type": "compaction",
                 "encrypted_content": summary_text,
-            }));
+            });
+            if let Some(turn_id) = compaction_turn_id {
+                compaction_item["metadata"] = serde_json::json!({ "turn_id": turn_id });
+            }
+            output.push(compaction_item);
             ResponseTemplate::new(200)
                 .insert_header("content-type", "application/json")
                 .set_body_json(serde_json::json!({ "output": output }))

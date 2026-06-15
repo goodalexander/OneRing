@@ -157,7 +157,7 @@ async fn copy_paste_local_image_persists_rollout_request_shape() -> anyhow::Resu
         .expect("expected user message with input image in rollout");
 
     let image_url = extract_image_url(&actual).expect("expected image url in rollout");
-    let expected = ResponseItem::Message {
+    let mut expected = ResponseItem::Message {
         id: None,
         role: "user".to_string(),
         content: vec![
@@ -180,6 +180,7 @@ async fn copy_paste_local_image_persists_rollout_request_shape() -> anyhow::Resu
         phase: None,
         metadata: None,
     };
+    expected.set_turn_id_if_missing(actual.turn_id().expect("rollout item turn id"));
 
     assert_eq!(actual, expected);
 
@@ -256,7 +257,7 @@ async fn drag_drop_image_persists_rollout_request_shape() -> anyhow::Result<()> 
         .expect("expected user message with input image in rollout");
 
     let image_url = extract_image_url(&actual).expect("expected image url in rollout");
-    let expected = ResponseItem::Message {
+    let mut expected = ResponseItem::Message {
         id: None,
         role: "user".to_string(),
         content: vec![
@@ -271,6 +272,7 @@ async fn drag_drop_image_persists_rollout_request_shape() -> anyhow::Result<()> 
         phase: None,
         metadata: None,
     };
+    expected.set_turn_id_if_missing(actual.turn_id().expect("rollout item turn id"));
 
     assert_eq!(actual, expected);
 

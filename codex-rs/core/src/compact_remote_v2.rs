@@ -231,7 +231,9 @@ async fn run_remote_compact_task_inner_impl(
     )
     .await?;
     let mut input = prompt_input.clone();
-    input.push(ResponseItem::CompactionTrigger { metadata: None });
+    let mut compaction_trigger = ResponseItem::CompactionTrigger { metadata: None };
+    turn_context.set_response_item_turn_id_if_missing(&mut compaction_trigger);
+    input.push(compaction_trigger);
     let prompt = Prompt {
         input,
         tools: tool_router.model_visible_specs(),

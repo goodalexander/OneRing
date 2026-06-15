@@ -757,6 +757,23 @@ pub struct ResponseItemMetadata {
     pub turn_id: Option<String>,
 }
 
+impl ResponseItemMetadata {
+    /// Returns the non-empty turn ID carried by this metadata, if present.
+    pub(crate) fn turn_id(&self) -> Option<&str> {
+        self.turn_id
+            .as_deref()
+            .filter(|turn_id| !turn_id.is_empty())
+    }
+
+    /// Sets `turn_id` unless this metadata already carries a non-empty turn ID.
+    pub(crate) fn set_turn_id_if_missing(&mut self, turn_id: &str) {
+        if turn_id.is_empty() || self.turn_id().is_some() {
+            return;
+        }
+        self.turn_id = Some(turn_id.to_string());
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, JsonSchema, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseItem {
@@ -969,16 +986,14 @@ impl ResponseItem {
         matches!(self, Self::Message { role, .. } if role == "user")
     }
 
-    /// Returns the non-empty turn ID stamped onto this item, if present.
+    /// Returns the non-empty turn ID set on this item, if present.
     pub fn turn_id(&self) -> Option<&str> {
-        self.metadata()
-            .and_then(|metadata| metadata.turn_id.as_deref())
-            .filter(|turn_id| !turn_id.is_empty())
+        self.metadata().and_then(ResponseItemMetadata::turn_id)
     }
 
-    /// Stamps the item with `turn_id` unless it already has a non-empty turn ID.
-    pub fn stamp_turn_id_if_missing(&mut self, turn_id: &str) {
-        if turn_id.is_empty() || self.turn_id().is_some() {
+    /// Sets the item's turn ID to `turn_id` unless it already has a non-empty turn ID.
+    pub fn set_turn_id_if_missing(&mut self, turn_id: &str) {
+        if turn_id.is_empty() {
             return;
         }
         let Some(metadata) = self.metadata_mut() else {
@@ -986,7 +1001,7 @@ impl ResponseItem {
         };
         metadata
             .get_or_insert_with(ResponseItemMetadata::default)
-            .turn_id = Some(turn_id.to_string());
+            .set_turn_id_if_missing(turn_id);
     }
 
     /// Removes Responses API item metadata before sending to a provider that does not accept it.
@@ -1855,7 +1870,7 @@ mod tests {
     }
 
     #[test]
-    fn response_item_metadata_round_trips_and_stamps_turn_ids() -> Result<()> {
+    fn response_item_metadata_round_trips_and_sets_turn_ids() -> Result<()> {
         let mut item = response_item_with_metadata(Some(response_item_metadata("turn-1")));
         let round_trip: ResponseItem = serde_json::from_value(serde_json::to_value(&item)?)?;
         assert_eq!(round_trip, item);
@@ -1871,20 +1886,20 @@ mod tests {
         }))?;
         assert_eq!(unknown_metadata, item);
 
-        item.stamp_turn_id_if_missing("turn-2");
+        item.set_turn_id_if_missing("turn-2");
         assert_eq!(item.turn_id(), Some("turn-1"));
 
         let mut empty_turn_id = response_item_with_metadata(Some(response_item_metadata("")));
-        empty_turn_id.stamp_turn_id_if_missing("turn-1");
+        empty_turn_id.set_turn_id_if_missing("turn-1");
         assert_eq!(empty_turn_id.turn_id(), Some("turn-1"));
 
         let mut missing_turn_id = response_item_with_metadata(/*metadata*/ None);
-        missing_turn_id.stamp_turn_id_if_missing("");
-        missing_turn_id.stamp_turn_id_if_missing("turn-1");
+        missing_turn_id.set_turn_id_if_missing("");
+        missing_turn_id.set_turn_id_if_missing("turn-1");
         assert_eq!(missing_turn_id.turn_id(), Some("turn-1"));
 
         let mut other = ResponseItem::Other;
-        other.stamp_turn_id_if_missing("turn-1");
+        other.set_turn_id_if_missing("turn-1");
         assert_eq!(other.turn_id(), None);
         Ok(())
     }
@@ -2765,9 +2780,9 @@ mod tests {
     }
 
     #[test]
-    fn serializes_stamped_compaction_trigger_metadata() -> Result<()> {
+    fn serializes_compaction_trigger_metadata_with_turn_id() -> Result<()> {
         let mut item = ResponseItem::CompactionTrigger { metadata: None };
-        item.stamp_turn_id_if_missing("turn-1");
+        item.set_turn_id_if_missing("turn-1");
 
         assert_eq!(
             serde_json::to_value(item)?,

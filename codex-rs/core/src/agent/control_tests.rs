@@ -908,6 +908,16 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
         .flush_rollout()
         .await
         .expect("parent rollout should flush");
+    let expected_parent_seed = parent_thread
+        .codex
+        .session
+        .clone_history()
+        .await
+        .raw_items()
+        .first()
+        .cloned()
+        .expect("parent seed should be recorded");
+
     let child_thread_id = harness
         .control
         .spawn_agent_with_metadata(
@@ -937,17 +947,12 @@ async fn spawn_agent_can_fork_parent_thread_history_with_sanitized_items() {
         .expect("child thread should be registered");
     assert_ne!(child_thread_id, parent_thread_id);
     let history = child_thread.codex.session.clone_history().await;
+    let mut expected_final_answer =
+        assistant_message("parent final answer", Some(MessagePhase::FinalAnswer));
+    expected_final_answer.set_turn_id_if_missing(&turn_context.sub_id);
     let expected_history = [
-        ResponseItem::Message {
-            id: None,
-            role: "user".to_string(),
-            content: vec![ContentItem::InputText {
-                text: "parent seed context".to_string(),
-            }],
-            phase: None,
-            metadata: None,
-        },
-        assistant_message("parent final answer", Some(MessagePhase::FinalAnswer)),
+        expected_parent_seed,
+        expected_final_answer,
         ResponseItem::Message {
             id: None,
             role: "developer".to_string(),

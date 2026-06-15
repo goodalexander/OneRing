@@ -740,6 +740,16 @@ impl InterAgentCommunication {
         }
     }
 
+    /// Sets the communication's turn ID unless it already has a non-empty turn ID.
+    pub fn set_turn_id_if_missing(&mut self, turn_id: &str) {
+        if turn_id.is_empty() {
+            return;
+        }
+        self.metadata
+            .get_or_insert_with(ResponseItemMetadata::default)
+            .set_turn_id_if_missing(turn_id);
+    }
+
     pub fn is_message_content(content: &[ContentItem]) -> bool {
         Self::from_message_content(content).is_some()
     }

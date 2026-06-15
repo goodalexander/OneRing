@@ -566,6 +566,9 @@ impl ModelClient {
             ApiCompactClient::new(transport, client_setup.api_provider, client_setup.api_auth)
                 .with_telemetry(Some(request_telemetry));
         let trace_attempt = compaction_trace.start_attempt(&payload);
+        // `/responses/compact` is unary and bypasses `map_response_stream`. Responses API
+        // sets generated compaction item metadata from this request's turn metadata before
+        // returning them, while retained input items already carry their existing metadata.
         let result = client
             .compact_input(
                 &payload,
@@ -1323,6 +1326,7 @@ impl ModelClientSession {
                 Ok(stream) => {
                     let (stream, _) = map_response_stream(
                         stream,
+                        responses_metadata.turn_id.clone(),
                         session_telemetry.clone(),
                         inference_trace_attempt,
                     );
@@ -1511,6 +1515,7 @@ impl ModelClientSession {
                 })?;
             let (stream, last_request_rx) = map_response_stream(
                 stream_result,
+                responses_metadata.turn_id.clone(),
                 session_telemetry.clone(),
                 inference_trace_attempt,
             );
@@ -1743,6 +1748,7 @@ const STREAM_DROPPED_REASON: &str = "response stream dropped before provider ter
 
 fn map_response_stream(
     api_stream: codex_api::ResponseStream,
+    output_item_turn_id: Option<String>,
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>) {
@@ -1757,6 +1763,7 @@ fn map_response_stream(
     map_response_events(
         upstream_request_id,
         api_stream,
+        output_item_turn_id,
         session_telemetry,
         inference_trace_attempt,
     )
@@ -1765,6 +1772,7 @@ fn map_response_stream(
 fn map_response_events<S>(
     upstream_request_id: Option<String>,
     api_stream: S,
+    output_item_turn_id: Option<String>,
     session_telemetry: SessionTelemetry,
     inference_trace_attempt: InferenceTraceAttempt,
 ) -> (ResponseStream, oneshot::Receiver<LastResponse>)
@@ -1805,7 +1813,10 @@ where
                 break;
             };
             match event {
-                Ok(ResponseEvent::OutputItemDone(item)) => {
+                Ok(ResponseEvent::OutputItemDone(mut item)) => {
+                    if let Some(turn_id) = output_item_turn_id.as_deref() {
+                        item.set_turn_id_if_missing(turn_id);
+                    }
                     items_added.push(item.clone());
                     if tx_event
                         .send(Ok(ResponseEvent::OutputItemDone(item)))

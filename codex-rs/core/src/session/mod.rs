@@ -2648,20 +2648,20 @@ impl Session {
         }
     }
 
-    /// Records conversation items: append to history, persist to rollout, and
-    /// notify clients observing raw response items.
+    /// Normalizes response items before they cross the durable history boundary.
     pub(crate) fn prepare_conversation_items_for_history<'a>(
         &self,
         turn_context: &TurnContext,
         items: &'a [ResponseItem],
     ) -> Cow<'a, [ResponseItem]> {
-        if !turn_context.features.enabled(Feature::ResizeAllImages) {
-            return Cow::Borrowed(items);
+        let mut prepared_items = Cow::Borrowed(items);
+        if turn_context.features.enabled(Feature::ResizeAllImages) {
+            prepare_response_items(prepared_items.to_mut());
         }
-
-        let mut prepared_items = items.to_vec();
-        prepare_response_items(&mut prepared_items);
-        Cow::Owned(prepared_items)
+        if prepared_items.iter().any(|item| item.turn_id().is_none()) {
+            turn_context.set_response_item_turn_ids_if_missing(prepared_items.to_mut());
+        }
+        prepared_items
     }
 
     pub(crate) fn response_item_from_user_input(
@@ -2680,6 +2680,8 @@ impl Session {
         ))
     }
 
+    /// Records conversation items: append to history, persist to rollout, and
+    /// notify clients observing raw response items.
     pub(crate) async fn record_conversation_items(
         &self,
         turn_context: &TurnContext,
@@ -2698,8 +2700,9 @@ impl Session {
     pub(crate) async fn record_inter_agent_communication(
         &self,
         turn_context: &TurnContext,
-        communication: InterAgentCommunication,
+        mut communication: InterAgentCommunication,
     ) {
+        communication.set_turn_id_if_missing(&turn_context.sub_id);
         let response_item = communication.to_model_input_item();
         let items = self.prepare_conversation_items_for_history(
             turn_context,
@@ -3100,6 +3103,7 @@ impl Session {
         {
             items.push(guardian_developer_message);
         }
+        turn_context.set_response_item_turn_ids_if_missing(&mut items);
         items
     }
 
