@@ -1813,6 +1813,8 @@ where
             };
             match event {
                 Ok(ResponseEvent::OutputItemDone(mut item)) => {
+                    // Websocket incremental requests compare against `LastResponse.items_added`
+                    // before `record_conversation_items` sees the streamed item.
                     if let Some(turn_id) = output_item_turn_id.as_deref() {
                         item.set_turn_id_if_missing(turn_id);
                     }

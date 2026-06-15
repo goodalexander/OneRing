@@ -232,6 +232,7 @@ async fn run_remote_compact_task_inner_impl(
     .await?;
     let mut input = prompt_input.clone();
     let mut compaction_trigger = ResponseItem::CompactionTrigger { metadata: None };
+    // The compaction trigger is request-only and never crosses the durable history recorder.
     compaction_trigger.set_turn_id_if_missing(&turn_context.sub_id);
     input.push(compaction_trigger);
     let prompt = Prompt {

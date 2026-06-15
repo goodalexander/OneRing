@@ -915,6 +915,8 @@ async fn thread_title_from_thread_store(
     (!title.is_empty() && thread.preview.trim() != title).then(|| title.to_string())
 }
 
+// Only use this for items newly created for one turn. Replacement histories can also contain
+// retained older items whose missing IDs should not be relabeled as the active turn.
 fn set_response_item_turn_ids_if_missing(items: &mut [ResponseItem], turn_id: &str) {
     for item in items {
         item.set_turn_id_if_missing(turn_id);
@@ -2654,7 +2656,10 @@ impl Session {
         }
     }
 
-    /// Normalizes response items before they cross the durable history boundary.
+    /// Normalizes response items before they cross the durable append-history boundary.
+    ///
+    /// Most recorded response items get `metadata.turn_id` here. Explicit callsites exist only
+    /// for items that must carry it before or without this boundary.
     pub(crate) fn prepare_conversation_items_for_history<'a>(
         &self,
         turn_context: &TurnContext,
@@ -2708,6 +2713,8 @@ impl Session {
         turn_context: &TurnContext,
         mut communication: InterAgentCommunication,
     ) {
+        // Rollout persists the structured communication separately from its derived response item,
+        // so set the ID before both history recording and rollout persistence.
         communication.set_turn_id_if_missing(&turn_context.sub_id);
         let response_item = communication.to_model_input_item();
         let items = self.prepare_conversation_items_for_history(
@@ -3109,6 +3116,8 @@ impl Session {
         {
             items.push(guardian_developer_message);
         }
+        // Some callers insert initial context into prompt/replacement history without first
+        // passing through `record_conversation_items`.
         set_response_item_turn_ids_if_missing(&mut items, &turn_context.sub_id);
         items
     }

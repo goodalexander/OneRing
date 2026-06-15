@@ -205,6 +205,8 @@ async fn run_compact_task_inner_impl(
     sess.emit_turn_item_started(&turn_context, &compaction_item)
         .await;
     let mut initial_input_for_turn: ResponseItem = ResponseInputItem::from(input).into();
+    // Local compaction records this into scratch history used to build the compact request, not
+    // through `Session::record_conversation_items`.
     initial_input_for_turn.set_turn_id_if_missing(&turn_context.sub_id);
 
     let mut history = sess.clone_history().await;
@@ -297,6 +299,8 @@ async fn run_compact_task_inner_impl(
 
     let mut new_history = build_compacted_history(Vec::new(), &user_messages, &summary_text);
     if let Some(summary_item) = new_history.last_mut() {
+        // `new_history` also contains retained old items, so stamp only the new local summary
+        // instead of relabeling every missing ID at replacement-history install time.
         summary_item.set_turn_id_if_missing(&turn_context.sub_id);
     }
     let window_id = sess.advance_auto_compact_window_id().await;
