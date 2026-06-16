@@ -148,32 +148,59 @@ async fn reads_declared_config_only_through_executor_file_system() {
 
     assert_eq!(
         servers,
-        vec![(
-            "demo".to_string(),
-            McpServerConfig {
-                transport: McpServerTransportConfig::Stdio {
-                    command: "demo-mcp".to_string(),
-                    args: Vec::new(),
-                    env: None,
-                    env_vars: Vec::new(),
-                    cwd: Some(plugin_root.to_path_buf()),
+        vec![
+            (
+                "demo".to_string(),
+                McpServerConfig {
+                    transport: McpServerTransportConfig::Stdio {
+                        command: "demo-mcp".to_string(),
+                        args: Vec::new(),
+                        env: None,
+                        env_vars: Vec::new(),
+                        cwd: Some(plugin_root.to_path_buf()),
+                    },
+                    environment_id: "executor-test".to_string(),
+                    enabled: true,
+                    required: false,
+                    supports_parallel_tool_calls: false,
+                    disabled_reason: None,
+                    startup_timeout_sec: None,
+                    tool_timeout_sec: None,
+                    default_tools_approval_mode: None,
+                    enabled_tools: None,
+                    disabled_tools: None,
+                    scopes: None,
+                    oauth: None,
+                    oauth_resource: None,
+                    tools: HashMap::new(),
                 },
-                environment_id: "executor-test".to_string(),
-                enabled: true,
-                required: false,
-                supports_parallel_tool_calls: false,
-                disabled_reason: None,
-                startup_timeout_sec: None,
-                tool_timeout_sec: None,
-                default_tools_approval_mode: None,
-                enabled_tools: None,
-                disabled_tools: None,
-                scopes: None,
-                oauth: None,
-                oauth_resource: None,
-                tools: HashMap::new(),
-            },
-        )]
+            ),
+            (
+                "hosted".to_string(),
+                McpServerConfig {
+                    transport: McpServerTransportConfig::StreamableHttp {
+                        url: "https://example.com/mcp".to_string(),
+                        bearer_token_env_var: None,
+                        http_headers: None,
+                        env_http_headers: None,
+                    },
+                    environment_id: "executor-test".to_string(),
+                    enabled: true,
+                    required: false,
+                    supports_parallel_tool_calls: false,
+                    disabled_reason: None,
+                    startup_timeout_sec: None,
+                    tool_timeout_sec: None,
+                    default_tools_approval_mode: None,
+                    enabled_tools: None,
+                    disabled_tools: None,
+                    scopes: None,
+                    oauth: None,
+                    oauth_resource: None,
+                    tools: HashMap::new(),
+                },
+            ),
+        ]
     );
     assert_eq!(reads(&file_system), vec![config_path]);
 }
