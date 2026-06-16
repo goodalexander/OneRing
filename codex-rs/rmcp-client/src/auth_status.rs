@@ -3,8 +3,10 @@ use std::time::Duration;
 
 use anyhow::Error;
 use anyhow::Result;
+use codex_exec_server::HttpClient;
+use codex_exec_server::HttpRequestParams;
+use codex_exec_server::ReqwestHttpClient;
 use codex_protocol::protocol::McpAuthStatus;
-use reqwest::Client;
 use reqwest::StatusCode;
 use reqwest::Url;
 use reqwest::header::AUTHORIZATION;
@@ -14,8 +16,8 @@ use tracing::debug;
 
 use crate::oauth::StoredOAuthTokenStatus;
 use crate::oauth::oauth_token_status;
-use crate::utils::apply_default_headers;
 use crate::utils::build_default_headers;
+use crate::utils::protocol_headers;
 use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::OAuthCredentialsStoreMode;
 
@@ -28,7 +30,15 @@ pub struct StreamableHttpOAuthDiscovery {
     pub scopes_supported: Option<Vec<String>>,
 }
 
+pub(crate) struct StreamableHttpOAuthMetadata {
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub registration_endpoint: Option<String>,
+    pub scopes_supported: Option<Vec<String>>,
+}
+
 /// Determine the authentication status for a streamable HTTP MCP server.
+#[allow(clippy::too_many_arguments)]
 pub async fn determine_streamable_http_auth_status(
     server_name: &str,
     url: &str,
@@ -37,6 +47,7 @@ pub async fn determine_streamable_http_auth_status(
     env_http_headers: Option<HashMap<String, String>>,
     store_mode: OAuthCredentialsStoreMode,
     keyring_backend_kind: AuthKeyringBackendKind,
+    http_client: std::sync::Arc<dyn HttpClient>,
 ) -> Result<McpAuthStatus> {
     if bearer_token_env_var.is_some() {
         return Ok(McpAuthStatus::BearerToken);
@@ -55,7 +66,7 @@ pub async fn determine_streamable_http_auth_status(
         StoredOAuthTokenStatus::Missing => {}
     }
 
-    match discover_streamable_http_oauth_with_headers(url, &default_headers).await {
+    match discover_streamable_http_oauth_with_headers(url, &default_headers, http_client).await {
         Ok(Some(_)) => Ok(McpAuthStatus::NotLoggedIn),
         Ok(None) => Ok(McpAuthStatus::Unsupported),
         Err(error) => {
@@ -81,30 +92,64 @@ pub async fn discover_streamable_http_oauth(
     http_headers: Option<HashMap<String, String>>,
     env_http_headers: Option<HashMap<String, String>>,
 ) -> Result<Option<StreamableHttpOAuthDiscovery>> {
-    let default_headers = build_default_headers(http_headers, env_http_headers)?;
-    discover_streamable_http_oauth_with_headers(url, &default_headers).await
+    discover_streamable_http_oauth_with_http_client(
+        url,
+        http_headers,
+        env_http_headers,
+        std::sync::Arc::new(ReqwestHttpClient),
+    )
+    .await
 }
 
-async fn discover_streamable_http_oauth_with_headers(
+pub async fn discover_streamable_http_oauth_with_http_client(
+    url: &str,
+    http_headers: Option<HashMap<String, String>>,
+    env_http_headers: Option<HashMap<String, String>>,
+    http_client: std::sync::Arc<dyn HttpClient>,
+) -> Result<Option<StreamableHttpOAuthDiscovery>> {
+    Ok(
+        discover_streamable_http_oauth_metadata(url, http_headers, env_http_headers, http_client)
+            .await?
+            .map(|metadata| StreamableHttpOAuthDiscovery {
+                scopes_supported: metadata.scopes_supported,
+            }),
+    )
+}
+
+pub(crate) async fn discover_streamable_http_oauth_metadata(
+    url: &str,
+    http_headers: Option<HashMap<String, String>>,
+    env_http_headers: Option<HashMap<String, String>>,
+    http_client: std::sync::Arc<dyn HttpClient>,
+) -> Result<Option<StreamableHttpOAuthMetadata>> {
+    let default_headers = build_default_headers(http_headers, env_http_headers)?;
+    discover_streamable_http_oauth_with_headers(url, &default_headers, http_client).await
+}
+
+pub(crate) async fn discover_streamable_http_oauth_with_headers(
     url: &str,
     default_headers: &HeaderMap,
-) -> Result<Option<StreamableHttpOAuthDiscovery>> {
+    http_client: std::sync::Arc<dyn HttpClient>,
+) -> Result<Option<StreamableHttpOAuthMetadata>> {
     let base_url = Url::parse(url)?;
-
-    // Use no_proxy to avoid a bug in the system-configuration crate that
-    // can result in a panic. See #8912.
-    let builder = Client::builder().timeout(DISCOVERY_TIMEOUT).no_proxy();
-    let client = apply_default_headers(builder, default_headers).build()?;
 
     let mut last_error: Option<Error> = None;
     for candidate_path in discovery_paths(base_url.path()) {
         let mut discovery_url = base_url.clone();
         discovery_url.set_path(&candidate_path);
 
-        let response = match client
-            .get(discovery_url.clone())
-            .header(OAUTH_DISCOVERY_HEADER, OAUTH_DISCOVERY_VERSION)
-            .send()
+        let mut request_headers = default_headers.clone();
+        request_headers.insert(OAUTH_DISCOVERY_HEADER, OAUTH_DISCOVERY_VERSION.parse()?);
+        let response = match http_client
+            .http_request(HttpRequestParams {
+                method: "GET".to_string(),
+                url: discovery_url.to_string(),
+                headers: protocol_headers(&request_headers),
+                body: None,
+                timeout_ms: Some(DISCOVERY_TIMEOUT.as_millis() as u64),
+                request_id: "oauth-discovery".to_string(),
+                stream_response: false,
+            })
             .await
         {
             Ok(response) => response,
@@ -114,20 +159,26 @@ async fn discover_streamable_http_oauth_with_headers(
             }
         };
 
-        if response.status() != StatusCode::OK {
+        if response.status != StatusCode::OK.as_u16() {
             continue;
         }
 
-        let metadata = match response.json::<OAuthDiscoveryMetadata>().await {
-            Ok(metadata) => metadata,
-            Err(err) => {
-                last_error = Some(err.into());
-                continue;
-            }
-        };
+        let metadata =
+            match serde_json::from_slice::<OAuthDiscoveryMetadata>(&response.body.into_inner()) {
+                Ok(metadata) => metadata,
+                Err(err) => {
+                    last_error = Some(err.into());
+                    continue;
+                }
+            };
 
-        if metadata.authorization_endpoint.is_some() && metadata.token_endpoint.is_some() {
-            return Ok(Some(StreamableHttpOAuthDiscovery {
+        if let (Some(authorization_endpoint), Some(token_endpoint)) =
+            (metadata.authorization_endpoint, metadata.token_endpoint)
+        {
+            return Ok(Some(StreamableHttpOAuthMetadata {
+                authorization_endpoint,
+                token_endpoint,
+                registration_endpoint: metadata.registration_endpoint,
                 scopes_supported: normalize_scopes(metadata.scopes_supported),
             }));
         }
@@ -146,6 +197,8 @@ struct OAuthDiscoveryMetadata {
     authorization_endpoint: Option<String>,
     #[serde(default)]
     token_endpoint: Option<String>,
+    #[serde(default)]
+    registration_endpoint: Option<String>,
     #[serde(default)]
     scopes_supported: Option<Vec<String>>,
 }
@@ -291,6 +344,7 @@ mod tests {
             /*env_http_headers*/ None,
             OAuthCredentialsStoreMode::Keyring,
             AuthKeyringBackendKind::default(),
+            std::sync::Arc::new(ReqwestHttpClient),
         )
         .await
         .expect("status should compute");
@@ -313,6 +367,7 @@ mod tests {
             )])),
             OAuthCredentialsStoreMode::Keyring,
             AuthKeyringBackendKind::default(),
+            std::sync::Arc::new(ReqwestHttpClient),
         )
         .await
         .expect("status should compute");

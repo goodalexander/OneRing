@@ -126,6 +126,18 @@ pub(crate) fn apply_default_headers(
     }
 }
 
+pub(crate) fn protocol_headers(headers: &HeaderMap) -> Vec<codex_exec_server::HttpHeader> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            Some(codex_exec_server::HttpHeader {
+                name: name.to_string(),
+                value: value.to_str().ok()?.to_string(),
+            })
+        })
+        .collect()
+}
+
 #[cfg(unix)]
 pub(crate) const DEFAULT_ENV_VARS: &[&str] = &[
     "HOME",

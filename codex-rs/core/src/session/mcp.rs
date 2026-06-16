@@ -310,13 +310,6 @@ impl Session {
             effective_mcp_servers_from_configured(mcp_servers, &mcp_config, auth.as_ref());
         let host_owned_codex_apps_enabled =
             host_owned_codex_apps_enabled(&mcp_config, auth.as_ref());
-        let auth_statuses = compute_auth_statuses(
-            mcp_servers.iter(),
-            store_mode,
-            keyring_backend_kind,
-            auth.as_ref(),
-        )
-        .await;
         let environment_manager = self.services.turn_environments.environment_manager();
         let mcp_runtime_context = match turn_context.environments.primary() {
             Some(turn_environment) => McpRuntimeContext::new(
@@ -329,6 +322,14 @@ impl Session {
                 turn_context.cwd.to_path_buf(),
             ),
         };
+        let auth_statuses = compute_auth_statuses(
+            mcp_servers.iter(),
+            store_mode,
+            keyring_backend_kind,
+            auth.as_ref(),
+            mcp_runtime_context.clone(),
+        )
+        .await;
         let mcp_startup_cancellation_token = {
             let mut guard = self.services.mcp_startup_cancellation_token.lock().await;
             guard.cancel();

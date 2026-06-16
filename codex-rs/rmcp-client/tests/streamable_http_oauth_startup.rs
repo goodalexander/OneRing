@@ -228,6 +228,7 @@ async fn auth_status(server_url: &str) -> anyhow::Result<McpAuthStatus> {
         /*env_http_headers*/ None,
         OAuthCredentialsStoreMode::File,
         AuthKeyringBackendKind::default(),
+        std::sync::Arc::new(codex_exec_server::ReqwestHttpClient),
     )
     .await
 }

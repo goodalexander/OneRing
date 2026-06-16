@@ -265,6 +265,7 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_mcp_manager(
         config.mcp_oauth_credentials_store_mode,
         config.auth_keyring_backend_kind(),
         auth.as_ref(),
+        McpRuntimeContext::new(Arc::clone(&environment_manager), config.cwd.to_path_buf()),
     )
     .await;
 
