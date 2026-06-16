@@ -42,6 +42,7 @@ use codex_mcp::compute_auth_statuses;
 use codex_mcp::effective_mcp_servers;
 use codex_mcp::host_owned_codex_apps_enabled;
 use codex_mcp::tool_plugin_provenance;
+use codex_utils_plugins::plugin_service_routing::plugin_service_preview_enabled;
 
 const CONNECTORS_READY_TIMEOUT_ON_EMPTY_TOOLS: Duration = Duration::from_secs(30);
 
@@ -477,7 +478,8 @@ async fn cached_directory_connectors_for_tool_suggest_with_auth(
             Some(account_id),
             auth.get_chatgpt_user_id(),
             is_workspace_account,
-        ),
+        )
+        .plugin_service_preview(plugin_service_preview_enabled()),
     );
 
     codex_connectors::cached_directory_connectors(&cache_context).unwrap_or_default()
