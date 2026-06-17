@@ -228,6 +228,13 @@ fn browser_controls_are_stable_and_enabled_by_default() {
     assert_eq!(Feature::BrowserUse.default_enabled(), true);
     assert_eq!(feature_for_key("browser_use"), Some(Feature::BrowserUse));
 
+    assert_eq!(Feature::BrowserUseFullCdpAccess.stage(), Stage::Stable);
+    assert_eq!(Feature::BrowserUseFullCdpAccess.default_enabled(), true);
+    assert_eq!(
+        feature_for_key("browser_use_full_cdp_access"),
+        Some(Feature::BrowserUseFullCdpAccess)
+    );
+
     assert_eq!(Feature::BrowserUseExternal.stage(), Stage::Stable);
     assert_eq!(Feature::BrowserUseExternal.default_enabled(), true);
     assert_eq!(
