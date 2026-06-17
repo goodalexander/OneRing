@@ -2717,7 +2717,6 @@ async fn plugin_uninstall_success_updates_cached_plugin_list() {
     chat.on_plugin_uninstall_loaded(
         cwd.to_path_buf(),
         "plugin-docs".to_string(),
-        "Docs".to_string(),
         Ok(PluginUninstallResponse {}),
     );
     let popup = render_bottom_popup(&chat, /*width*/ 120);
