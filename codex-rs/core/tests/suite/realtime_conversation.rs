@@ -2245,7 +2245,7 @@ async fn conversation_startup_context_current_thread_selects_many_turns_by_budge
                     role: "user".to_string(),
                     content: vec![ContentItem::InputText { text: user_turn }],
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 }),
                 RolloutItem::ResponseItem(ResponseItem::Message {
                     id: None,
@@ -2254,7 +2254,7 @@ async fn conversation_startup_context_current_thread_selects_many_turns_by_budge
                         text: assistant_turn,
                     }],
                     phase: None,
-                    metadata: None,
+                    internal_chat_message_metadata_passthrough: None,
                 }),
             ]
         })

@@ -41,7 +41,6 @@ use crate::models::MessagePhase;
 use crate::models::PermissionProfile;
 use crate::models::ResponseInputItem;
 use crate::models::ResponseItem;
-use crate::models::ResponseItemMetadata;
 use crate::models::SandboxEnforcement;
 use crate::models::WebSearchAction;
 use crate::num_format::format_with_separators;
@@ -691,9 +690,6 @@ pub struct InterAgentCommunication {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub encrypted_content: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub metadata: Option<ResponseItemMetadata>,
     pub trigger_turn: bool,
 }
 
@@ -711,7 +707,6 @@ impl InterAgentCommunication {
             other_recipients,
             content,
             encrypted_content: None,
-            metadata: None,
             trigger_turn,
         }
     }
@@ -729,7 +724,6 @@ impl InterAgentCommunication {
             other_recipients,
             content: String::new(),
             encrypted_content: Some(encrypted_content),
-            metadata: None,
             trigger_turn,
         }
     }
@@ -773,7 +767,7 @@ impl InterAgentCommunication {
             author: self.author.to_string(),
             recipient: self.recipient.to_string(),
             content,
-            metadata: self.metadata.clone(),
+            internal_chat_message_metadata_passthrough: None,
         }
     }
 
@@ -2977,7 +2971,7 @@ impl From<CompactedItem> for ResponseItem {
                 text: value.message,
             }],
             phase: None,
-            metadata: None,
+            internal_chat_message_metadata_passthrough: None,
         }
     }
 }
@@ -4263,7 +4257,6 @@ mod tests {
             other_recipients: vec![AgentPath::root().join("worker").expect("recipient path")],
             content: "review the diff".to_string(),
             encrypted_content: None,
-            metadata: None,
             trigger_turn: true,
         };
 
@@ -4304,7 +4297,7 @@ mod tests {
                         encrypted_content: "encrypted payload".to_string(),
                     },
                 ],
-                metadata: None,
+                internal_chat_message_metadata_passthrough: None,
             }
         );
     }
