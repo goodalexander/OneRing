@@ -698,6 +698,47 @@ fn join_uses_the_base_uri_path_convention() {
 }
 
 #[test]
+fn starts_with_uses_uri_segment_boundaries() {
+    for (path, base, expected) in [
+        ("file:///workspace/plugin", "file:///workspace/plugin", true),
+        (
+            "file:///workspace/plugin/assets/icon.svg",
+            "file:///workspace/plugin",
+            true,
+        ),
+        (
+            "file:///workspace/plugin-other/icon.svg",
+            "file:///workspace/plugin",
+            false,
+        ),
+        (
+            "file:///C:/plugins/foo/assets/icon.svg",
+            "file:///C:/plugins/foo",
+            true,
+        ),
+        (
+            "file:///C:/plugins/foo2/assets/icon.svg",
+            "file:///C:/plugins/foo",
+            false,
+        ),
+        (
+            "file://server/share/plugins/foo/icon.svg",
+            "file://server/share/plugins/foo",
+            true,
+        ),
+        (
+            "file://other/share/plugins/foo/icon.svg",
+            "file://server/share/plugins/foo",
+            false,
+        ),
+    ] {
+        let path = PathUri::parse(path).expect("valid path URI");
+        let base = PathUri::parse(base).expect("valid base URI");
+        assert_eq!(path.starts_with(&base), expected);
+    }
+}
+
+#[test]
 fn to_url_returns_the_validated_url() {
     let uri = PathUri::parse("file://localhost/workspace/a%20file.rs").expect("valid file URI");
 

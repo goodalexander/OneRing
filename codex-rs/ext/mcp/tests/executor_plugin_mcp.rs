@@ -9,6 +9,7 @@ use codex_extension_api::McpServerContribution;
 use codex_extension_api::McpServerContributionContext;
 use codex_protocol::capabilities::CapabilityRootLocation;
 use codex_protocol::capabilities::SelectedCapabilityRoot;
+use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 use std::sync::Arc;
 
@@ -105,7 +106,7 @@ async fn selected_plugin_contributions(
         id: "selected-root".to_string(),
         location: CapabilityRootLocation::Environment {
             environment_id: LOCAL_ENVIRONMENT_ID.to_string(),
-            path: plugin_root.to_string_lossy().into_owned(),
+            path: PathUri::from_path(plugin_root).expect("plugin root URI"),
         },
     }]);
     codex_mcp_extension::initialize_executor_plugin_thread_data(&mut thread_init);

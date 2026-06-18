@@ -43,6 +43,7 @@ use codex_skills_extension::provider::SkillProviderFuture;
 use codex_skills_extension::provider::SkillReadRequest;
 use codex_skills_extension::provider::SkillSearchRequest;
 use codex_utils_absolute_path::AbsolutePathBuf;
+use codex_utils_path_uri::PathUri;
 use pretty_assertions::assert_eq;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -166,7 +167,7 @@ async fn selected_executor_catalog_is_context_and_selected_entrypoint_is_turn_in
         id: "lint-fix".to_string(),
         location: CapabilityRootLocation::Environment {
             environment_id: "env-1".to_string(),
-            path: "/skills/lint-fix".to_string(),
+            path: PathUri::parse("file:///skills/lint-fix").expect("path URI"),
         },
     }]);
     let session_source = SessionSource::Cli;
@@ -367,7 +368,7 @@ async fn root_qualified_locator_selects_only_the_matching_executor_skill() -> Te
                 id: id.to_string(),
                 location: CapabilityRootLocation::Environment {
                     environment_id: "env-1".to_string(),
-                    path: path.to_string(),
+                    path: PathUri::from_path(path).expect("path URI"),
                 },
             })
             .collect::<Vec<_>>(),
