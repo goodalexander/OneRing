@@ -465,6 +465,7 @@ async fn unauthorized_recovery_reports_mode_and_step_names() {
         manager: Arc::clone(&manager),
         step: UnauthorizedRecoveryStep::Reload,
         expected_account_id: None,
+        rejected_auth: None,
         mode: UnauthorizedRecoveryMode::Managed,
     };
     assert_eq!(managed.mode_name(), "managed");
@@ -474,6 +475,7 @@ async fn unauthorized_recovery_reports_mode_and_step_names() {
         manager,
         step: UnauthorizedRecoveryStep::ExternalRefresh,
         expected_account_id: None,
+        rejected_auth: None,
         mode: UnauthorizedRecoveryMode::External,
     };
     assert_eq!(external.mode_name(), "external");
