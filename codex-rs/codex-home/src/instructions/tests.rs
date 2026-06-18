@@ -10,6 +10,7 @@ use tempfile::TempDir;
 
 use super::CodexHomeUserInstructionsProvider;
 use super::DEFAULT_AGENTS_MD_FILENAME;
+use super::INSTRUCTIONS_DIR_NAME;
 use super::LOCAL_AGENTS_MD_FILENAME;
 
 fn provider(home: &TempDir) -> CodexHomeUserInstructionsProvider {
@@ -24,10 +25,18 @@ fn expected(
     text: &str,
     warnings: Vec<String>,
 ) -> LoadedUserInstructions {
+    expected_with_source(home.path().join(filename), text, warnings)
+}
+
+fn expected_with_source(
+    source: impl AsRef<Path>,
+    text: &str,
+    warnings: Vec<String>,
+) -> LoadedUserInstructions {
     LoadedUserInstructions {
         instructions: Some(UserInstructions {
             text: text.to_string(),
-            source: AbsolutePathBuf::try_from(home.path().join(filename))
+            source: AbsolutePathBuf::try_from(source.as_ref().to_path_buf())
                 .expect("absolute source path"),
         }),
         warnings,
@@ -104,6 +113,51 @@ async fn directory_override_falls_back_to_default() {
     assert_eq!(
         provider(&home).load_user_instructions().await,
         expected(&home, DEFAULT_AGENTS_MD_FILENAME, "default", Vec::new())
+    );
+}
+
+#[tokio::test]
+async fn instructions_directory_markdown_files_are_appended_in_sorted_order() {
+    let home = TempDir::new().expect("temp dir");
+    let instructions_dir = home.path().join(INSTRUCTIONS_DIR_NAME);
+    fs::create_dir(&instructions_dir).expect("create instructions dir");
+    fs::write(instructions_dir.join("b.md"), "second").expect("write second");
+    fs::write(instructions_dir.join("a.md"), "first").expect("write first");
+    fs::write(instructions_dir.join("c.txt"), "ignored").expect("write ignored");
+    fs::write(instructions_dir.join("d.md"), " \n\t").expect("write empty");
+
+    assert_eq!(
+        provider(&home).load_user_instructions().await,
+        expected_with_source(&instructions_dir, "first\n\nsecond", Vec::new())
+    );
+}
+
+#[tokio::test]
+async fn agents_md_is_combined_with_instructions_directory() {
+    let home = TempDir::new().expect("temp dir");
+    let instructions_dir = home.path().join(INSTRUCTIONS_DIR_NAME);
+    fs::create_dir(&instructions_dir).expect("create instructions dir");
+    fs::write(home.path().join(DEFAULT_AGENTS_MD_FILENAME), "default").expect("write default");
+    fs::write(instructions_dir.join("extra.md"), "extra").expect("write extra");
+
+    assert_eq!(
+        provider(&home).load_user_instructions().await,
+        expected_with_source(&instructions_dir, "default\n\nextra", Vec::new())
+    );
+}
+
+#[tokio::test]
+async fn override_still_takes_precedence_when_instructions_directory_exists() {
+    let home = TempDir::new().expect("temp dir");
+    let instructions_dir = home.path().join(INSTRUCTIONS_DIR_NAME);
+    fs::create_dir(&instructions_dir).expect("create instructions dir");
+    fs::write(home.path().join(DEFAULT_AGENTS_MD_FILENAME), "default").expect("write default");
+    fs::write(home.path().join(LOCAL_AGENTS_MD_FILENAME), "override").expect("write override");
+    fs::write(instructions_dir.join("extra.md"), "extra").expect("write extra");
+
+    assert_eq!(
+        provider(&home).load_user_instructions().await,
+        expected_with_source(&instructions_dir, "override\n\nextra", Vec::new())
     );
 }
 
