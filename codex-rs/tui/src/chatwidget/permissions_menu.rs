@@ -150,7 +150,6 @@ impl ChatWidget {
             ..Default::default()
         }
     }
-
     fn permission_profile_selection_item(
         label: &str,
         id: &str,
