@@ -1,7 +1,13 @@
+#[cfg(unix)]
+use std::io::BufRead as _;
+#[cfg(unix)]
+use std::io::BufReader;
 use std::io::Read as _;
 use std::io::Write as _;
 use std::net::TcpListener;
 use std::path::Path;
+#[cfg(unix)]
+use std::process::Stdio;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -98,6 +104,27 @@ metrics_exporter = {{ otlp-http = {{ endpoint = "{base_url}/v1/metrics", protoco
         metrics.contains("success") || metrics.contains("disconnected"),
         "{metrics}"
     );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn local_exec_server_exits_successfully_on_sigterm() -> Result<()> {
+    let codex_home = TempDir::new()?;
+    let mut child = std::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+        .env("CODEX_HOME", codex_home.path())
+        .args(["exec-server", "--listen", "ws://127.0.0.1:0"])
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let mut listen_url = String::new();
+    BufReader::new(child.stdout.take().expect("child stdout")).read_line(&mut listen_url)?;
+    assert!(listen_url.starts_with("ws://127.0.0.1:"), "{listen_url}");
+
+    // SAFETY: `child.id()` is the live process spawned above.
+    let result = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
+    assert_eq!(result, 0);
+    let status = child.wait()?;
+    assert!(status.success(), "{status}");
     Ok(())
 }
 

@@ -91,6 +91,7 @@ fn emits_remote_lifecycle_metrics() {
 
     telemetry.remote_registration_completed("success", Duration::from_millis(10));
     telemetry.remote_rendezvous_completed("error", Duration::from_millis(20));
+    telemetry.remote_authorization_completed("success", Duration::from_millis(30));
     telemetry.remote_reconnect("connect_failed");
     metrics.shutdown().expect("shutdown metrics");
 
@@ -110,6 +111,13 @@ fn emits_remote_lifecycle_metrics() {
         )]
     );
     assert_eq!(
+        metric_points(&metrics, REMOTE_AUTHORIZATION_METRICS.total_name),
+        vec![(
+            1.0,
+            BTreeMap::from([("result".to_string(), "success".to_string())]),
+        )]
+    );
+    assert_eq!(
         metric_points(&metrics, REMOTE_RECONNECTS_TOTAL_METRIC),
         vec![(
             1.0,
@@ -122,6 +130,10 @@ fn emits_remote_lifecycle_metrics() {
     );
     assert_eq!(
         histogram_count(&metrics, REMOTE_RENDEZVOUS_METRICS.duration_name),
+        1
+    );
+    assert_eq!(
+        histogram_count(&metrics, REMOTE_AUTHORIZATION_METRICS.duration_name),
         1
     );
 }

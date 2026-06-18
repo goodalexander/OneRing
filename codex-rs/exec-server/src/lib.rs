@@ -28,6 +28,7 @@ mod runtime_paths;
 mod sandboxed_file_system;
 mod server;
 mod telemetry;
+mod trace_context;
 
 pub use client::ExecServerClient;
 pub use client::ExecServerError;
