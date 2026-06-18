@@ -17,6 +17,7 @@ pub struct PluginManifest<Resource> {
 /// Component resources declared by a plugin manifest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PluginManifestPaths<Resource> {
+    pub agents: Option<Resource>,
     pub skills: Option<Resource>,
     pub mcp_servers: Option<PluginManifestMcpServers<Resource>>,
     pub apps: Option<Resource>,
@@ -101,6 +102,7 @@ impl<Resource> PluginManifest<Resource> {
             interface,
         } = self;
         let PluginManifestPaths {
+            agents,
             skills,
             mcp_servers,
             apps,
@@ -172,6 +174,7 @@ impl<Resource> PluginManifest<Resource> {
             description,
             keywords,
             paths: PluginManifestPaths {
+                agents: agents.map(&mut map).transpose()?,
                 skills: skills.map(&mut map).transpose()?,
                 mcp_servers,
                 apps: apps.map(&mut map).transpose()?,

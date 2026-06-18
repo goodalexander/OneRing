@@ -17,3 +17,10 @@ pub struct PluginSkillRoot {
     pub plugin_id: String,
     pub plugin_root: AbsolutePathBuf,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PluginAgentRoot {
+    pub path: AbsolutePathBuf,
+    pub plugin_id: String,
+    pub plugin_root: AbsolutePathBuf,
+}
