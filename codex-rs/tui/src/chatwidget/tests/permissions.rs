@@ -1,6 +1,7 @@
 use super::*;
 use crate::legacy_core::config::PermissionProfileCatalogEntry;
 use codex_protocol::models::ActivePermissionProfile;
+use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::ManagedFileSystemPermissions;
 use codex_protocol::permissions::FileSystemAccessMode;
 use codex_protocol::permissions::FileSystemPath;
@@ -283,7 +284,7 @@ async fn profile_permissions_full_access_opens_confirmation() {
                 display_label,
             }),
         } if preset.id == "full-access"
-            && profile_id == ":danger-full-access"
+            && profile_id == BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS
             && display_label == "Full Access"
     ));
 }
@@ -325,22 +326,8 @@ async fn preset_matching_accepts_workspace_write_with_extra_roots() {
     let cwd = test_path_buf("/tmp/project").abs();
 
     assert!(
-        ChatWidget::preset_matches_current(
-            AskForApproval::OnRequest,
-            &current_profile,
-            cwd.as_path(),
-            &preset
-        ),
+        preset.matches_permission_profile(&current_profile, cwd.as_path()),
         "WorkspaceWrite with extra roots should still match the Ask for approval preset"
-    );
-    assert!(
-        !ChatWidget::preset_matches_current(
-            AskForApproval::Never,
-            &current_profile,
-            cwd.as_path(),
-            &preset
-        ),
-        "approval mismatch should prevent matching the preset"
     );
 }
 
@@ -373,12 +360,7 @@ async fn preset_matching_does_not_treat_non_cwd_writable_profile_as_read_only() 
     let cwd = test_path_buf("/tmp/project").abs();
 
     assert!(
-        !ChatWidget::preset_matches_current(
-            AskForApproval::OnRequest,
-            &current_profile,
-            cwd.as_path(),
-            &preset
-        ),
+        !preset.matches_permission_profile(&current_profile, cwd.as_path()),
         "profiles with any writable root should not be classified as Read Only"
     );
 }
