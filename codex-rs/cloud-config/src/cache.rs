@@ -97,10 +97,7 @@ impl CloudConfigBundleCache {
                     return Err(CacheLoadStatus::CacheManagedLayersSignatureInvalid);
                 }
             }
-            None if cache_file.signed_payload.bundle.has_managed_layer_buckets() => {
-                return Err(CacheLoadStatus::CacheManagedLayersSignatureInvalid);
-            }
-            None => {}
+            None => return Err(CacheLoadStatus::CacheManagedLayersSignatureInvalid),
         }
         if cache_file.signed_payload.version != CLOUD_CONFIG_BUNDLE_CACHE_VERSION {
             return Err(CacheLoadStatus::CacheVersionUnsupported(

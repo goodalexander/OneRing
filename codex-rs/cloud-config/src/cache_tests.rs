@@ -175,7 +175,7 @@ async fn save_writes_signed_payload_and_loads_for_matching_identity() {
 }
 
 #[tokio::test]
-async fn load_accepts_legacy_cache_without_managed_data() {
+async fn load_rejects_legacy_cache_without_full_signature() {
     let codex_home = tempdir().expect("tempdir");
     let cache = create_test_cache(codex_home.path());
     let cache_file = legacy_signed_cache_file(valid_signed_payload());
@@ -183,7 +183,7 @@ async fn load_accepts_legacy_cache_without_managed_data() {
 
     assert_eq!(
         cache.load(Some("user-12345"), Some("account-12345")).await,
-        Ok(cache_file.signed_payload)
+        Err(CacheLoadStatus::CacheManagedLayersSignatureInvalid)
     );
 }
 

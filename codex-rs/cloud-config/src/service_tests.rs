@@ -492,17 +492,30 @@ async fn get_bundle_rejects_invalid_remote_buckets_before_cache_write() {
 }
 
 #[tokio::test]
-async fn get_bundle_ignores_invalid_cache_and_refetches() {
+async fn get_bundle_ignores_legacy_cache_without_full_signature_and_refetches() {
     let codex_home = tempdir().expect("tempdir");
     let cache = create_test_cache(codex_home.path());
     cache
         .save(
             Some("user-12345".to_string()),
             Some("account-12345".to_string()),
-            invalid_config_bundle(),
+            test_bundle(),
         )
         .await
-        .expect("write invalid cache");
+        .expect("write cache");
+    let cache_path = codex_home.path().join(CLOUD_CONFIG_BUNDLE_CACHE_FILENAME);
+    let mut cache_file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&cache_path).expect("read cache"))
+            .expect("parse cache");
+    cache_file
+        .as_object_mut()
+        .expect("cache file should be an object")
+        .remove("managed_layers_signature");
+    std::fs::write(
+        cache_path,
+        serde_json::to_vec_pretty(&cache_file).expect("serialize legacy cache"),
+    )
+    .expect("write legacy cache");
     let replacement_bundle = test_bundle();
     let fetcher = Arc::new(StaticBundleClient::new(replacement_bundle.clone()));
     let service = CloudConfigBundleService::new(
