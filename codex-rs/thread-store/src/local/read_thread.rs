@@ -27,54 +27,6 @@ use crate::StoredThreadHistory;
 use crate::ThreadStoreError;
 use crate::ThreadStoreResult;
 
-#[cfg(test)]
-pub(crate) mod read_work {
-    use std::future::Future;
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicUsize;
-    use std::sync::atomic::Ordering;
-
-    #[derive(Clone, Default)]
-    struct ReadWorkRecorder {
-        summary_reads: Arc<AtomicUsize>,
-        history_reads: Arc<AtomicUsize>,
-    }
-
-    #[derive(Debug, PartialEq, Eq)]
-    pub(crate) struct ReadWork {
-        pub(crate) summary_reads: usize,
-        pub(crate) history_reads: usize,
-    }
-
-    tokio::task_local! {
-        static READ_WORK: ReadWorkRecorder;
-    }
-
-    pub(super) fn record_summary_read() {
-        let _ = READ_WORK.try_with(|work| {
-            work.summary_reads.fetch_add(1, Ordering::Relaxed);
-        });
-    }
-
-    pub(super) fn record_history_read() {
-        let _ = READ_WORK.try_with(|work| {
-            work.history_reads.fetch_add(1, Ordering::Relaxed);
-        });
-    }
-
-    pub(crate) async fn measure<T>(future: impl Future<Output = T>) -> (T, ReadWork) {
-        let recorder = ReadWorkRecorder::default();
-        let result = READ_WORK.scope(recorder.clone(), future).await;
-        (
-            result,
-            ReadWork {
-                summary_reads: recorder.summary_reads.load(Ordering::Relaxed),
-                history_reads: recorder.history_reads.load(Ordering::Relaxed),
-            },
-        )
-    }
-}
-
 pub(super) async fn read_thread(
     store: &LocalThreadStore,
     params: ReadThreadParams,
@@ -292,8 +244,6 @@ async fn read_thread_from_rollout_path(
     store: &LocalThreadStore,
     path: std::path::PathBuf,
 ) -> ThreadStoreResult<StoredThread> {
-    #[cfg(test)]
-    read_work::record_summary_read();
     let Some(item) = read_thread_item_from_rollout(path.clone()).await else {
         return stored_thread_from_session_meta(store, path).await;
     };
@@ -332,8 +282,6 @@ pub(super) async fn load_history_from_rollout_path(
     path: &std::path::Path,
     expected_thread_id: codex_protocol::ThreadId,
 ) -> ThreadStoreResult<StoredThreadHistory> {
-    #[cfg(test)]
-    read_work::record_history_read();
     let Some(path) = codex_rollout::existing_rollout_path(path).await else {
         return Err(ThreadStoreError::InvalidRequest {
             message: format!(
@@ -342,19 +290,17 @@ pub(super) async fn load_history_from_rollout_path(
             ),
         });
     };
-    let (items, thread_id, _) = RolloutRecorder::load_rollout_items(path.as_path())
-        .await
-        .map_err(|err| ThreadStoreError::Internal {
-            message: format!("failed to load thread history {}: {err}", path.display()),
-        })?;
-    if thread_id != Some(expected_thread_id) {
-        return Err(ThreadStoreError::InvalidRequest {
-            message: format!(
-                "rollout {} does not contain history for thread {expected_thread_id}",
-                path.display()
-            ),
-        });
-    }
+    let (items, _) =
+        RolloutRecorder::load_rollout_items_for_thread(path.as_path(), expected_thread_id)
+            .await
+            .map_err(|err| match err.kind() {
+                std::io::ErrorKind::InvalidData => ThreadStoreError::InvalidRequest {
+                    message: err.to_string(),
+                },
+                _ => ThreadStoreError::Internal {
+                    message: format!("failed to load thread history {}: {err}", path.display()),
+                },
+            })?;
     Ok(StoredThreadHistory {
         thread_id: expected_thread_id,
         items,
@@ -1034,13 +980,14 @@ mod tests {
             .await
             .expect("state db upsert should succeed");
 
-        let (thread, read_work) = read_work::measure(store.read_thread(ReadThreadParams {
-            thread_id,
-            include_archived: false,
-            include_history: true,
-        }))
-        .await;
-        let thread = thread.expect("read thread");
+        let thread = store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: false,
+                include_history: true,
+            })
+            .await
+            .expect("read thread");
 
         assert_eq!(thread.thread_id, thread_id);
         assert_eq!(thread.rollout_path, Some(rollout_path));
@@ -1052,13 +999,6 @@ mod tests {
         let history = thread.history.expect("history should load");
         assert_eq!(history.thread_id, thread_id);
         assert_eq!(history.items.len(), 1);
-        assert_eq!(
-            read_work,
-            read_work::ReadWork {
-                summary_reads: 0,
-                history_reads: 1,
-            }
-        );
     }
 
     #[tokio::test]

@@ -867,6 +867,24 @@ impl RolloutRecorder {
     pub async fn load_rollout_items(
         path: &Path,
     ) -> std::io::Result<(Vec<RolloutItem>, Option<ThreadId>, usize)> {
+        Self::load_rollout_items_inner(path, /*expected_thread_id*/ None).await
+    }
+
+    /// Loads rollout items and rejects a mismatched first `SessionMeta` before reading the rest of
+    /// the rollout.
+    pub async fn load_rollout_items_for_thread(
+        path: &Path,
+        expected_thread_id: ThreadId,
+    ) -> std::io::Result<(Vec<RolloutItem>, usize)> {
+        let (items, _, parse_errors) =
+            Self::load_rollout_items_inner(path, Some(expected_thread_id)).await?;
+        Ok((items, parse_errors))
+    }
+
+    async fn load_rollout_items_inner(
+        path: &Path,
+        expected_thread_id: Option<ThreadId>,
+    ) -> std::io::Result<(Vec<RolloutItem>, Option<ThreadId>, usize)> {
         trace!("Resuming rollout from {path:?}");
         let mut items: Vec<RolloutItem> = Vec::new();
         let mut thread_id: Option<ThreadId> = None;
@@ -900,7 +918,19 @@ impl RolloutRecorder {
                     if thread_id.is_none()
                         && let RolloutItem::SessionMeta(session_meta_line) = &item
                     {
-                        thread_id = Some(session_meta_line.meta.id);
+                        let actual_thread_id = session_meta_line.meta.id;
+                        if let Some(expected_thread_id) = expected_thread_id.as_ref()
+                            && *expected_thread_id != actual_thread_id
+                        {
+                            return Err(IoError::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!(
+                                    "rollout {} contains history for thread {actual_thread_id}, not {expected_thread_id}",
+                                    path.display(),
+                                ),
+                            ));
+                        }
+                        thread_id = Some(actual_thread_id);
                     }
                     items.push(item);
                 }
@@ -912,6 +942,17 @@ impl RolloutRecorder {
         }
         if !saw_non_empty_line {
             return Err(IoError::other("empty session file"));
+        }
+        if let Some(expected_thread_id) = expected_thread_id
+            && thread_id.is_none()
+        {
+            return Err(IoError::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "rollout {} does not contain history for thread {expected_thread_id}",
+                    path.display()
+                ),
+            ));
         }
 
         tracing::debug!(
