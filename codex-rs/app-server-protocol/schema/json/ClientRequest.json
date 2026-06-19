@@ -210,7 +210,7 @@
               "type": "string"
             },
             "path": {
-              "type": "string"
+              "$ref": "#/definitions/PathUri"
             },
             "type": {
               "enum": [
@@ -1773,6 +1773,9 @@
         "restricted",
         "enabled"
       ],
+      "type": "string"
+    },
+    "PathUri": {
       "type": "string"
     },
     "PermissionProfileListParams": {

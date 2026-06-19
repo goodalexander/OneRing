@@ -135,7 +135,7 @@ fn normalize_plugin_mcp_server(
                 ),
                 Some(JsonValue::Null) | None => object.insert(
                     "cwd".to_string(),
-                    JsonValue::String(environment_cwd(root, None)?.to_string()),
+                    JsonValue::String(environment_cwd(root, /*configured_cwd*/ None)?.to_string()),
                 ),
                 Some(value) => object.insert("cwd".to_string(), value),
             };

@@ -81,8 +81,7 @@ async fn plugin_manifest_name_uri(
         plugin_root
             .basename()
             .filter(|_| raw_name.trim().is_empty())
-            .unwrap_or(raw_name)
-            .to_string(),
+            .unwrap_or(raw_name),
     )
 }
 

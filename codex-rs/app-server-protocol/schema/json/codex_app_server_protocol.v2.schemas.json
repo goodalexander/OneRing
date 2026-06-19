@@ -1167,7 +1167,7 @@
               "type": "string"
             },
             "path": {
-              "type": "string"
+              "$ref": "#/definitions/PathUri"
             },
             "type": {
               "enum": [
@@ -9297,6 +9297,9 @@
           "type": "object"
         }
       ]
+    },
+    "PathUri": {
+      "type": "string"
     },
     "PermissionProfileListParams": {
       "$schema": "http://json-schema.org/draft-07/schema#",
