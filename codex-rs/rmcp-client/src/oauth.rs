@@ -59,6 +59,7 @@ use rmcp::transport::auth::InMemoryCredentialStore;
 use rmcp::transport::auth::StoredCredentials;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
+use tokio::time::timeout;
 
 use codex_utils_home_dir::find_codex_home;
 
@@ -66,7 +67,9 @@ const KEYRING_SERVICE: &str = "Codex MCP Credentials";
 const MCP_OAUTH_SECRET_PREFIX: &str = "MCP_OAUTH";
 const REFRESH_SKEW_MILLIS: u64 = 30_000;
 const REFRESH_LOCK_DIR: &str = "mcp-oauth-refresh-locks";
-const REFRESH_LOCK_RETRY_SLEEP: Duration = Duration::from_millis(50);
+const REFRESH_LOCK_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(60);
+const REFRESH_LOCK_RETRY_SLEEP: Duration = Duration::from_millis(500);
+const REFRESH_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StoredOAuthTokens {
@@ -338,6 +341,43 @@ pub fn save_oauth_tokens(
     )
 }
 
+pub(crate) async fn save_oauth_tokens_locked(
+    server_name: &str,
+    tokens: &StoredOAuthTokens,
+    store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> Result<()> {
+    let keyring_store = DefaultKeyringStore;
+    save_oauth_tokens_locked_with_keyring_store(
+        &keyring_store,
+        server_name,
+        tokens,
+        store_mode,
+        keyring_backend_kind,
+    )
+    .await
+}
+
+async fn save_oauth_tokens_locked_with_keyring_store<K: KeyringStore + Clone + 'static>(
+    keyring_store: &K,
+    server_name: &str,
+    tokens: &StoredOAuthTokens,
+    store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> Result<()> {
+    // Login persistence shares the refresh transaction lock so a completed login always becomes
+    // authoritative: it either lands before refresh's reread or waits and overwrites the refresh
+    // result afterward.
+    let _lock = RefreshCredentialLock::acquire_for_server(server_name, &tokens.url).await?;
+    save_oauth_tokens_with_keyring_store(
+        keyring_store,
+        server_name,
+        tokens,
+        store_mode,
+        keyring_backend_kind,
+    )
+}
+
 fn save_oauth_tokens_with_keyring_store<K: KeyringStore + Clone + 'static>(
     keyring_store: &K,
     server_name: &str,
@@ -470,6 +510,42 @@ pub fn delete_oauth_tokens(
     )
 }
 
+pub async fn delete_oauth_tokens_locked(
+    server_name: &str,
+    url: &str,
+    store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+) -> Result<bool> {
+    let keyring_store = DefaultKeyringStore;
+    delete_oauth_tokens_locked_with_keyring_store(
+        &keyring_store,
+        store_mode,
+        keyring_backend_kind,
+        server_name,
+        url,
+    )
+    .await
+}
+
+async fn delete_oauth_tokens_locked_with_keyring_store<K: KeyringStore + Clone + 'static>(
+    keyring_store: &K,
+    store_mode: OAuthCredentialsStoreMode,
+    keyring_backend_kind: AuthKeyringBackendKind,
+    server_name: &str,
+    url: &str,
+) -> Result<bool> {
+    // Logout shares the refresh transaction lock so refresh cannot resurrect credentials after a
+    // completed delete: it either observes the deletion or finishes before logout removes it.
+    let _lock = RefreshCredentialLock::acquire_for_server(server_name, url).await?;
+    delete_oauth_tokens_from_keyring_and_file(
+        keyring_store,
+        store_mode,
+        keyring_backend_kind,
+        server_name,
+        url,
+    )
+}
+
 fn delete_oauth_tokens_from_keyring_and_file<K: KeyringStore + Clone + 'static>(
     keyring_store: &K,
     store_mode: OAuthCredentialsStoreMode,
@@ -583,7 +659,67 @@ impl OAuthPersistor {
     /// Persists the latest stored credentials if they have changed.
     /// Deletes the credentials if they are no longer present.
     pub(crate) async fn persist_if_needed(&self) -> Result<()> {
-        self.persist_if_needed_with_keyring_store(&DefaultKeyringStore)
+        self.persist_if_needed_locked_with_keyring_store(&DefaultKeyringStore)
+            .await
+    }
+
+    async fn persist_if_needed_locked_with_keyring_store<K: KeyringStore + Clone + 'static>(
+        &self,
+        keyring_store: &K,
+    ) -> Result<()> {
+        let snapshot = {
+            let last_credentials = self.inner.last_credentials.lock().await;
+            last_credentials.clone()
+        };
+        let (client_id, current_credentials) = self.manager_credentials().await?;
+        let manager_changed = match (&snapshot, current_credentials.as_ref()) {
+            (Some(previous), Some(current)) => {
+                previous.client_id != client_id
+                    || previous.token_response != WrappedOAuthTokenResponse(current.clone())
+            }
+            (None, None) => false,
+            (Some(_), None) | (None, Some(_)) => true,
+        };
+        if !manager_changed {
+            return Ok(());
+        }
+
+        let _lock =
+            RefreshCredentialLock::acquire_for_server(&self.inner.server_name, &self.inner.url)
+                .await?;
+        let latest = self.load_resolved_credentials(keyring_store)?;
+
+        let latest_matches_snapshot = match (&latest, &snapshot) {
+            (Some(latest), Some(snapshot)) => {
+                // `expires_in` is reconstructed from the durable `expires_at` timestamp on every
+                // load, so elapsed time alone must not look like a concurrent credential change.
+                let mut comparable_latest = latest.clone();
+                comparable_latest
+                    .token_response
+                    .0
+                    .set_expires_in(snapshot.token_response.0.expires_in().as_ref());
+                comparable_latest == *snapshot
+            }
+            (None, None) => true,
+            (Some(_), None) | (None, Some(_)) => false,
+        };
+
+        if !latest_matches_snapshot {
+            // A completed login or logout is authoritative over tokens refreshed inside an RMCP
+            // operation. Adopt that state instead of allowing delayed post-operation persistence
+            // to overwrite the login or resurrect the logout.
+            match latest {
+                Some(latest) => self.adopt_credentials(latest).await?,
+                None => {
+                    self.clear_manager_credentials().await;
+                    let mut last_credentials = self.inner.last_credentials.lock().await;
+                    *last_credentials = None;
+                }
+            }
+            return Ok(());
+        }
+
+        self.persist_if_needed_with_keyring_store(keyring_store)
             .await
     }
 
@@ -591,15 +727,40 @@ impl OAuthPersistor {
         clippy::await_holding_invalid_type,
         reason = "AuthorizationManager async access must be serialized through its mutex"
     )]
+    async fn manager_credentials(&self) -> Result<(String, Option<OAuthTokenResponse>)> {
+        let manager = self.inner.authorization_manager.clone();
+        let guard = manager.lock().await;
+        guard.get_credentials().await.map_err(Into::into)
+    }
+
+    fn load_resolved_credentials<K: KeyringStore + Clone + 'static>(
+        &self,
+        keyring_store: &K,
+    ) -> Result<Option<StoredOAuthTokens>> {
+        match self.inner.credential_store {
+            ResolvedOAuthCredentialStore::File => {
+                load_oauth_tokens_from_file(&self.inner.server_name, &self.inner.url)
+                    .context("failed to reread OAuth tokens from resolved file storage")
+            }
+            ResolvedOAuthCredentialStore::Keyring(keyring_backend_kind) => {
+                load_oauth_tokens_from_keyring(
+                    keyring_store,
+                    keyring_backend_kind,
+                    &self.inner.server_name,
+                    &self.inner.url,
+                )
+                .context(
+                    "failed to reread OAuth tokens from resolved keyring storage; refusing file fallback",
+                )
+            }
+        }
+    }
+
     async fn persist_if_needed_with_keyring_store<K: KeyringStore + Clone + 'static>(
         &self,
         keyring_store: &K,
     ) -> Result<()> {
-        let (client_id, maybe_credentials) = {
-            let manager = self.inner.authorization_manager.clone();
-            let guard = manager.lock().await;
-            guard.get_credentials().await
-        }?;
+        let (client_id, maybe_credentials) = self.manager_credentials().await?;
 
         match maybe_credentials {
             Some(credentials) => {
@@ -678,13 +839,25 @@ impl OAuthPersistor {
             .await
     }
 
+    async fn refresh_if_needed_with_keyring_store<K: KeyringStore + Clone + 'static>(
+        &self,
+        keyring_store: &K,
+    ) -> Result<()> {
+        self.refresh_if_needed_with_keyring_store_and_timeout(
+            keyring_store,
+            REFRESH_REQUEST_TIMEOUT,
+        )
+        .await
+    }
+
     #[expect(
         clippy::await_holding_invalid_type,
         reason = "AuthorizationManager async access must be serialized through its mutex"
     )]
-    async fn refresh_if_needed_with_keyring_store<K: KeyringStore + Clone + 'static>(
+    async fn refresh_if_needed_with_keyring_store_and_timeout<K: KeyringStore + Clone + 'static>(
         &self,
         keyring_store: &K,
+        refresh_request_timeout: Duration,
     ) -> Result<()> {
         let expires_at = {
             let guard = self.inner.last_credentials.lock().await;
@@ -695,29 +868,14 @@ impl OAuthPersistor {
             return Ok(());
         }
 
-        let key = compute_store_key(&self.inner.server_name, &self.inner.url)?;
-        let _lock = RefreshCredentialLock::acquire(&key).await?;
+        let _lock =
+            RefreshCredentialLock::acquire_for_server(&self.inner.server_name, &self.inner.url)
+                .await?;
         // The refresh transaction must stay on the store that supplied its snapshot. Falling back
         // here could replay an older rotating refresh token from the other store. We assume store
         // availability is stable for this client lifecycle and surface violations of that
         // assumption instead of switching stores.
-        let latest = match self.inner.credential_store {
-            ResolvedOAuthCredentialStore::File => {
-                load_oauth_tokens_from_file(&self.inner.server_name, &self.inner.url)
-                    .context("failed to reread OAuth tokens from resolved file storage")?
-            }
-            ResolvedOAuthCredentialStore::Keyring(keyring_backend_kind) => {
-                load_oauth_tokens_from_keyring(
-                    keyring_store,
-                    keyring_backend_kind,
-                    &self.inner.server_name,
-                    &self.inner.url,
-                )
-                .context(
-                    "failed to reread OAuth tokens from resolved keyring storage; refusing file fallback",
-                )?
-            }
-        };
+        let latest = self.load_resolved_credentials(keyring_store)?;
 
         // The pre-lock snapshot only decides whether a refresh transaction might be needed. Once
         // the lock is held, this reread is authoritative: adopt it before deciding whether to
@@ -742,12 +900,20 @@ impl OAuthPersistor {
         {
             let manager = self.inner.authorization_manager.clone();
             let guard = manager.lock().await;
-            guard.refresh_token().await.with_context(|| {
-                format!(
-                    "failed to refresh OAuth tokens for server {}",
+            match timeout(refresh_request_timeout, guard.refresh_token()).await {
+                Ok(result) => {
+                    result.with_context(|| {
+                        format!(
+                            "failed to refresh OAuth tokens for server {}",
+                            self.inner.server_name
+                        )
+                    })?;
+                }
+                Err(_) => anyhow::bail!(
+                    "timed out after {refresh_request_timeout:?} refreshing OAuth tokens for server {}",
                     self.inner.server_name
-                )
-            })?;
+                ),
+            }
         }
 
         self.persist_if_needed_with_keyring_store(keyring_store)
@@ -773,7 +939,18 @@ struct RefreshCredentialLock {
 }
 
 impl RefreshCredentialLock {
+    async fn acquire_for_server(server_name: &str, url: &str) -> Result<Self> {
+        let key = compute_store_key(server_name, url)?;
+        Self::acquire(&key)
+            .await
+            .with_context(|| format!("failed to acquire OAuth credential lock for {server_name}"))
+    }
+
     async fn acquire(store_key: &str) -> Result<Self> {
+        Self::acquire_with_timeout(store_key, REFRESH_LOCK_ACQUIRE_TIMEOUT).await
+    }
+
+    async fn acquire_with_timeout(store_key: &str, acquire_timeout: Duration) -> Result<Self> {
         let path = refresh_lock_path(store_key)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
@@ -787,18 +964,32 @@ impl RefreshCredentialLock {
             .open(&path)
             .with_context(|| format!("failed to open OAuth refresh lock {}", path.display()))?;
 
-        loop {
-            match file.try_lock() {
-                Ok(()) => break,
-                Err(std::fs::TryLockError::WouldBlock) => {
-                    sleep(REFRESH_LOCK_RETRY_SLEEP).await;
-                }
-                Err(error) => {
-                    return Err(std::io::Error::from(error)).with_context(|| {
-                        format!("failed to lock OAuth refresh lock {}", path.display())
-                    });
+        // Bound every contender, but keep the lock for the full provider request and persistence
+        // transaction. Releasing it while awaiting the provider would allow concurrent use of a
+        // rotating refresh token.
+        match timeout(acquire_timeout, async {
+            loop {
+                match file.try_lock() {
+                    Ok(()) => return Ok(()),
+                    Err(std::fs::TryLockError::WouldBlock) => {
+                        sleep(REFRESH_LOCK_RETRY_SLEEP).await;
+                    }
+                    Err(error) => return Err(std::io::Error::from(error)),
                 }
             }
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                return Err(error).with_context(|| {
+                    format!("failed to lock OAuth refresh lock {}", path.display())
+                });
+            }
+            Err(_) => anyhow::bail!(
+                "timed out after {acquire_timeout:?} waiting for OAuth refresh lock {}",
+                path.display()
+            ),
         }
 
         Ok(Self { _file: file })
@@ -1113,6 +1304,7 @@ mod tests {
     use std::sync::MutexGuard;
     use std::sync::OnceLock;
     use std::sync::PoisonError;
+    use std::sync::mpsc;
     use tempfile::tempdir;
     use tokio::sync::Mutex as TokioMutex;
     use wiremock::Mock;
@@ -1663,6 +1855,336 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn refresh_lock_acquisition_times_out_without_stealing() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let store_key = "test-store-key";
+        let held_lock =
+            RefreshCredentialLock::acquire_with_timeout(store_key, Duration::from_millis(100))
+                .await?;
+
+        let error =
+            match RefreshCredentialLock::acquire_with_timeout(store_key, Duration::from_millis(50))
+                .await
+            {
+                Ok(_) => panic!("contending lock acquisition should time out"),
+                Err(error) => error,
+            };
+        assert!(
+            error
+                .to_string()
+                .contains("timed out after 50ms waiting for OAuth refresh lock"),
+            "unexpected error: {error:#}"
+        );
+
+        drop(held_lock);
+        let _reacquired =
+            RefreshCredentialLock::acquire_with_timeout(store_key, Duration::from_millis(100))
+                .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn provider_refresh_timeout_releases_lock_without_persisting() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let server = MockServer::start().await;
+        mount_oauth_metadata(&server).await;
+        let refresh_started = mount_refresh_response_with_signal(
+            &server,
+            "refresh-token",
+            "late-access-token",
+            "late-refresh-token",
+            Duration::from_secs(1),
+        )
+        .await;
+
+        let store = MockKeyringStore::default();
+        let initial_tokens = expired_sample_tokens(&format!("{}/mcp", server.uri()));
+        super::save_oauth_tokens_with_keyring_store(
+            &store,
+            &initial_tokens.server_name,
+            &initial_tokens,
+            OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+        )?;
+
+        let manager = authorization_manager_for(&initial_tokens).await?;
+        let persistor = OAuthPersistor::new(
+            initial_tokens.server_name.clone(),
+            initial_tokens.url.clone(),
+            manager,
+            ResolvedOAuthCredentialStore::Keyring(AuthKeyringBackendKind::Direct),
+            Some(initial_tokens.clone()),
+        );
+        let refresh_task = tokio::spawn({
+            let persistor = persistor.clone();
+            let store = store.clone();
+            async move {
+                persistor
+                    .refresh_if_needed_with_keyring_store_and_timeout(
+                        &store,
+                        Duration::from_millis(200),
+                    )
+                    .await
+            }
+        });
+
+        wait_for_signal(refresh_started).await?;
+        let error = refresh_task
+            .await?
+            .expect_err("delayed provider response should time out");
+        assert_eq!(
+            error.to_string(),
+            "timed out after 200ms refreshing OAuth tokens for server test-server"
+        );
+
+        let store_key = super::compute_store_key(&initial_tokens.server_name, &initial_tokens.url)?;
+        let _lock =
+            RefreshCredentialLock::acquire_with_timeout(&store_key, Duration::from_millis(100))
+                .await?;
+        let stored = super::load_oauth_tokens_with_keyring_store(
+            &store,
+            &initial_tokens.server_name,
+            &initial_tokens.url,
+            OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+        )?
+        .expect("original tokens should remain persisted");
+        assert_eq!(access_token(&stored.tokens), "access-token");
+        assert_eq!(
+            refresh_token(&stored.tokens),
+            Some("refresh-token".to_string())
+        );
+        server.verify().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn completed_login_prevents_delayed_post_operation_overwrite() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let server = MockServer::start().await;
+        let store = MockKeyringStore::default();
+        let (initial_tokens, manager, persistor) =
+            persistor_after_rmcp_refresh(&store, &server).await?;
+
+        let login_tokens = tokens_with_credentials(
+            initial_tokens.clone(),
+            "login-access-token",
+            "login-refresh-token",
+        );
+        super::save_oauth_tokens_locked_with_keyring_store(
+            &store,
+            &login_tokens.server_name,
+            &login_tokens,
+            OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+        )
+        .await?;
+
+        persistor
+            .persist_if_needed_locked_with_keyring_store(&store)
+            .await?;
+
+        let stored = super::load_oauth_tokens_with_keyring_store(
+            &store,
+            &initial_tokens.server_name,
+            &initial_tokens.url,
+            OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+        )?
+        .expect("login tokens should remain persisted");
+        assert_eq!(access_token(&stored.tokens), "login-access-token");
+        assert_eq!(
+            refresh_token(&stored.tokens),
+            Some("login-refresh-token".to_string())
+        );
+        let manager_tokens = tokens_from_manager(&manager).await?;
+        assert_eq!(access_token(&manager_tokens), "login-access-token");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn locked_login_save_after_refresh_still_wins() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let server = MockServer::start().await;
+        mount_oauth_metadata(&server).await;
+        let refresh_started = mount_refresh_response_with_signal(
+            &server,
+            "refresh-token",
+            "refreshed-before-login",
+            "rotated-before-login",
+            Duration::from_millis(200),
+        )
+        .await;
+
+        let store = MockKeyringStore::default();
+        let initial_tokens = expired_sample_tokens(&format!("{}/mcp", server.uri()));
+        super::save_oauth_tokens_with_keyring_store(
+            &store,
+            &initial_tokens.server_name,
+            &initial_tokens,
+            OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+        )?;
+
+        let manager = authorization_manager_for(&initial_tokens).await?;
+        let persistor = OAuthPersistor::new(
+            initial_tokens.server_name.clone(),
+            initial_tokens.url.clone(),
+            manager,
+            ResolvedOAuthCredentialStore::Keyring(AuthKeyringBackendKind::Direct),
+            Some(initial_tokens.clone()),
+        );
+        let refresh_task = tokio::spawn({
+            let persistor = persistor.clone();
+            let store = store.clone();
+            async move { persistor.refresh_if_needed_with_keyring_store(&store).await }
+        });
+
+        wait_for_signal(refresh_started).await?;
+
+        let mut login_tokens = sample_tokens();
+        login_tokens.url.clone_from(&initial_tokens.url);
+        login_tokens
+            .token_response
+            .0
+            .set_access_token(AccessToken::new("login-after-refresh-access".to_string()));
+        login_tokens
+            .token_response
+            .0
+            .set_refresh_token(Some(RefreshToken::new(
+                "login-after-refresh-token".to_string(),
+            )));
+        super::save_oauth_tokens_locked_with_keyring_store(
+            &store,
+            &login_tokens.server_name,
+            &login_tokens,
+            OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+        )
+        .await?;
+        refresh_task.await??;
+
+        server.verify().await;
+        let stored = super::load_oauth_tokens_with_keyring_store(
+            &store,
+            &initial_tokens.server_name,
+            &initial_tokens.url,
+            OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+        )?
+        .expect("login tokens should remain persisted");
+        assert_eq!(access_token(&stored.tokens), "login-after-refresh-access");
+        assert_eq!(
+            refresh_token(&stored.tokens),
+            Some("login-after-refresh-token".to_string())
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "AuthorizationManager async access must be serialized through its mutex"
+    )]
+    async fn completed_logout_prevents_delayed_post_operation_resurrection() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let server = MockServer::start().await;
+        let store = MockKeyringStore::default();
+        let (initial_tokens, manager, persistor) =
+            persistor_after_rmcp_refresh(&store, &server).await?;
+
+        let removed = super::delete_oauth_tokens_locked_with_keyring_store(
+            &store,
+            OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+            &initial_tokens.server_name,
+            &initial_tokens.url,
+        )
+        .await?;
+        assert!(removed);
+
+        persistor
+            .persist_if_needed_locked_with_keyring_store(&store)
+            .await?;
+
+        let stored = super::load_oauth_tokens_with_keyring_store(
+            &store,
+            &initial_tokens.server_name,
+            &initial_tokens.url,
+            OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+        )?;
+        assert!(stored.is_none());
+        let guard = manager.lock().await;
+        let (_, manager_tokens) = guard.get_credentials().await?;
+        assert!(manager_tokens.is_none());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn locked_logout_after_refresh_still_deletes() -> Result<()> {
+        let _env = TempCodexHome::new();
+        let server = MockServer::start().await;
+        mount_oauth_metadata(&server).await;
+        let refresh_started = mount_refresh_response_with_signal(
+            &server,
+            "refresh-token",
+            "refreshed-before-logout",
+            "rotated-before-logout",
+            Duration::from_millis(200),
+        )
+        .await;
+
+        let store = MockKeyringStore::default();
+        let initial_tokens = expired_sample_tokens(&format!("{}/mcp", server.uri()));
+        super::save_oauth_tokens_with_keyring_store(
+            &store,
+            &initial_tokens.server_name,
+            &initial_tokens,
+            OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+        )?;
+
+        let manager = authorization_manager_for(&initial_tokens).await?;
+        let persistor = OAuthPersistor::new(
+            initial_tokens.server_name.clone(),
+            initial_tokens.url.clone(),
+            manager,
+            ResolvedOAuthCredentialStore::Keyring(AuthKeyringBackendKind::Direct),
+            Some(initial_tokens.clone()),
+        );
+        let refresh_task = tokio::spawn({
+            let persistor = persistor.clone();
+            let store = store.clone();
+            async move { persistor.refresh_if_needed_with_keyring_store(&store).await }
+        });
+
+        wait_for_signal(refresh_started).await?;
+
+        let removed = super::delete_oauth_tokens_locked_with_keyring_store(
+            &store,
+            OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+            &initial_tokens.server_name,
+            &initial_tokens.url,
+        )
+        .await?;
+        refresh_task.await??;
+
+        server.verify().await;
+        assert!(removed);
+        let stored = super::load_oauth_tokens_with_keyring_store(
+            &store,
+            &initial_tokens.server_name,
+            &initial_tokens.url,
+            OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+        )?;
+        assert!(stored.is_none());
+        Ok(())
+    }
+
     #[test]
     fn save_oauth_tokens_with_secrets_backend_falls_back_to_file_when_keyring_fails() -> Result<()>
     {
@@ -1949,6 +2471,57 @@ mod tests {
         );
     }
 
+    async fn persistor_after_rmcp_refresh(
+        store: &MockKeyringStore,
+        server: &MockServer,
+    ) -> Result<(
+        StoredOAuthTokens,
+        Arc<TokioMutex<AuthorizationManager>>,
+        OAuthPersistor,
+    )> {
+        mount_oauth_metadata(server).await;
+        let mut initial_tokens = sample_tokens();
+        initial_tokens.url = format!("{}/mcp", server.uri());
+        super::save_oauth_tokens_with_keyring_store(
+            store,
+            &initial_tokens.server_name,
+            &initial_tokens,
+            OAuthCredentialsStoreMode::Keyring,
+            AuthKeyringBackendKind::Direct,
+        )?;
+        let manager = authorization_manager_for(&initial_tokens).await?;
+        let persistor = OAuthPersistor::new(
+            initial_tokens.server_name.clone(),
+            initial_tokens.url.clone(),
+            manager.clone(),
+            ResolvedOAuthCredentialStore::Keyring(AuthKeyringBackendKind::Direct),
+            Some(initial_tokens.clone()),
+        );
+        let rmcp_tokens = tokens_with_credentials(
+            initial_tokens.clone(),
+            "rmcp-access-token",
+            "rmcp-refresh-token",
+        );
+        install_tokens_in_manager(&manager, &rmcp_tokens).await?;
+        Ok((initial_tokens, manager, persistor))
+    }
+
+    fn tokens_with_credentials(
+        mut tokens: StoredOAuthTokens,
+        access_token: &str,
+        refresh_token: &str,
+    ) -> StoredOAuthTokens {
+        tokens
+            .token_response
+            .0
+            .set_access_token(AccessToken::new(access_token.to_string()));
+        tokens
+            .token_response
+            .0
+            .set_refresh_token(Some(RefreshToken::new(refresh_token.to_string())));
+        tokens
+    }
+
     async fn authorization_manager_for(
         tokens: &StoredOAuthTokens,
     ) -> Result<Arc<TokioMutex<AuthorizationManager>>> {
@@ -2000,6 +2573,50 @@ mod tests {
             .expect(1)
             .mount(server)
             .await;
+    }
+
+    async fn mount_refresh_response_with_signal(
+        server: &MockServer,
+        request_refresh_token: &str,
+        response_access_token: &str,
+        response_refresh_token: &str,
+        response_delay: Duration,
+    ) -> mpsc::Receiver<()> {
+        let (tx, rx) = mpsc::channel();
+        let response_access_token = response_access_token.to_string();
+        let response_refresh_token = response_refresh_token.to_string();
+        Mock::given(method("POST"))
+            .and(path("/oauth/token"))
+            .and(body_string_contains("grant_type=refresh_token"))
+            .and(body_string_contains(format!(
+                "refresh_token={request_refresh_token}"
+            )))
+            .respond_with(move |_request: &wiremock::Request| {
+                let _ = tx.send(());
+                let access_token = response_access_token.clone();
+                let refresh_token = response_refresh_token.clone();
+                ResponseTemplate::new(200)
+                    .set_delay(response_delay)
+                    .set_body_json(json!({
+                        "access_token": access_token,
+                        "token_type": "Bearer",
+                        "expires_in": 3600,
+                        "refresh_token": refresh_token,
+                        "scope": "scope-a scope-b",
+                    }))
+            })
+            .expect(1)
+            .mount(server)
+            .await;
+        rx
+    }
+
+    async fn wait_for_signal(rx: mpsc::Receiver<()>) -> Result<()> {
+        tokio::task::spawn_blocking(move || {
+            rx.recv_timeout(Duration::from_secs(5))
+                .context("timed out waiting for refresh request")
+        })
+        .await?
     }
 
     #[expect(
