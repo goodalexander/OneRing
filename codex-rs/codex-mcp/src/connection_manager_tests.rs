@@ -5,7 +5,7 @@ use crate::codex_apps_cache::CodexAppsToolsCacheContext;
 use crate::codex_apps_cache::load_startup_cached_codex_apps_server_info;
 use crate::codex_apps_cache::read_cached_codex_apps_tools;
 use crate::codex_apps_cache::write_cached_codex_apps_tools;
-use crate::codex_apps_cache::write_cached_codex_apps_tools_if_needed;
+use crate::codex_apps_cache::write_cached_codex_apps_tools_for_test;
 use crate::declared_openai_file_input_param_names;
 use crate::elicitation::ElicitationRequestManager;
 use crate::elicitation::elicitation_is_rejected_by_policy;
@@ -755,12 +755,7 @@ fn startup_cached_codex_apps_tools_loads_from_disk_cache() {
         "calendar_search",
     )];
     let server_info = create_test_server_info("Codex Apps");
-    write_cached_codex_apps_tools_if_needed(
-        CODEX_APPS_MCP_SERVER_NAME,
-        Some(&writer_cache_context),
-        &server_info,
-        &cached_tools,
-    );
+    write_cached_codex_apps_tools_for_test(&writer_cache_context, &server_info, &cached_tools);
     let cache_context = create_codex_apps_tools_cache_context(
         codex_home.path().to_path_buf(),
         Some("account-one"),
@@ -827,9 +822,8 @@ fn codex_apps_server_info_cache_survives_legacy_tools_cache_write() {
         Some("user-one"),
     );
     let server_info = create_test_server_info("Codex Apps");
-    write_cached_codex_apps_tools_if_needed(
-        CODEX_APPS_MCP_SERVER_NAME,
-        Some(&cache_context),
+    write_cached_codex_apps_tools_for_test(
+        &cache_context,
         &server_info,
         &[create_test_tool(
             CODEX_APPS_MCP_SERVER_NAME,

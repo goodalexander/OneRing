@@ -7,6 +7,7 @@
 //! `codex-core`.
 
 use std::collections::HashMap;
+use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -28,7 +29,6 @@ use crate::rmcp_client::MCP_TOOLS_LIST_DURATION_METRIC;
 use crate::rmcp_client::ManagedClient;
 use crate::rmcp_client::StartupOutcomeError;
 use crate::rmcp_client::list_tools_for_client_uncached;
-use crate::rmcp_client::resolve_bearer_token;
 use crate::runtime::McpRuntimeContext;
 use crate::runtime::emit_duration;
 use crate::server::EffectiveMcpServer;
@@ -175,12 +175,18 @@ impl McpConnectionManager {
                 },
             )
             .await;
+            let configured_config = server.configured_config();
             // Resolve once, then use the same credential for the cache key and
             // the MCP client. For built-in Codex Apps, `CODEX_CONNECTORS_TOKEN`
             // overrides CodexAuth and decides which catalog MCP returns.
-            let resolved_bearer_token =
-                resolve_bearer_token_for_server(&server_name, &server).map_err(Into::into);
-            let configured_config = server.configured_config();
+            let resolved_bearer_token = match configured_config.map(|config| &config.transport) {
+                Some(McpServerTransportConfig::StreamableHttp {
+                    bearer_token_env_var,
+                    ..
+                }) => resolve_bearer_token(&server_name, bearer_token_env_var.as_deref()),
+                Some(McpServerTransportConfig::Stdio { .. }) | None => Ok(None),
+            }
+            .map_err(Into::into);
             let codex_apps_tools_cache_context = if server_name == CODEX_APPS_MCP_SERVER_NAME
                 && let (Ok(resolved_bearer_token), Some(configured_config)) =
                     (resolved_bearer_token.as_ref(), configured_config)
@@ -870,19 +876,30 @@ impl Drop for McpConnectionManager {
     }
 }
 
-fn resolve_bearer_token_for_server(
+fn resolve_bearer_token(
     server_name: &str,
-    server: &EffectiveMcpServer,
+    bearer_token_env_var: Option<&str>,
 ) -> Result<Option<String>> {
-    let Some(config) = server.configured_config() else {
+    let Some(env_var) = bearer_token_env_var else {
         return Ok(None);
     };
-    match &config.transport {
-        McpServerTransportConfig::StreamableHttp {
-            bearer_token_env_var,
-            ..
-        } => resolve_bearer_token(server_name, bearer_token_env_var.as_deref()),
-        McpServerTransportConfig::Stdio { .. } => Ok(None),
+
+    match env::var(env_var) {
+        Ok(value) => {
+            if value.is_empty() {
+                Err(anyhow!(
+                    "Environment variable {env_var} for MCP server '{server_name}' is empty"
+                ))
+            } else {
+                Ok(Some(value))
+            }
+        }
+        Err(env::VarError::NotPresent) => Err(anyhow!(
+            "Environment variable {env_var} for MCP server '{server_name}' is not set"
+        )),
+        Err(env::VarError::NotUnicode(_)) => Err(anyhow!(
+            "Environment variable {env_var} for MCP server '{server_name}' contains invalid Unicode"
+        )),
     }
 }
 

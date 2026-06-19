@@ -9,7 +9,6 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::env;
 use std::ffi::OsString;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -438,33 +437,6 @@ fn strip_untrusted_connector_meta(tool: &mut RmcpTool) {
 
 fn is_untrusted_connector_meta_key(key: &str) -> bool {
     UNTRUSTED_CONNECTOR_META_KEYS.contains(&key)
-}
-
-pub(crate) fn resolve_bearer_token(
-    server_name: &str,
-    bearer_token_env_var: Option<&str>,
-) -> Result<Option<String>> {
-    let Some(env_var) = bearer_token_env_var else {
-        return Ok(None);
-    };
-
-    match env::var(env_var) {
-        Ok(value) => {
-            if value.is_empty() {
-                Err(anyhow!(
-                    "Environment variable {env_var} for MCP server '{server_name}' is empty"
-                ))
-            } else {
-                Ok(Some(value))
-            }
-        }
-        Err(env::VarError::NotPresent) => Err(anyhow!(
-            "Environment variable {env_var} for MCP server '{server_name}' is not set"
-        )),
-        Err(env::VarError::NotUnicode(_)) => Err(anyhow!(
-            "Environment variable {env_var} for MCP server '{server_name}' contains invalid Unicode"
-        )),
-    }
 }
 
 fn validate_mcp_server_name(server_name: &str) -> Result<()> {

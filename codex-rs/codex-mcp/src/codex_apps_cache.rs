@@ -22,6 +22,7 @@ use codex_protocol::mcp::McpServerInfo;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
+use serde_json::json;
 use sha1::Digest;
 use sha1::Sha1;
 
@@ -119,8 +120,8 @@ impl CodexAppsToolsCacheContext {
         tools: Vec<ToolInfo>,
     ) -> Vec<ToolInfo> {
         let publish_start = Instant::now();
-        let mut publication_state = lock_unpoisoned(&self.entry.publication_state);
-        if ticket.generation <= publication_state.last_accepted_generation {
+        let mut last_accepted_generation = lock_unpoisoned(&self.entry.last_accepted_generation);
+        if ticket.generation <= *last_accepted_generation {
             emit_duration(
                 MCP_TOOLS_CACHE_PUBLISH_DURATION_METRIC,
                 publish_start.elapsed(),
@@ -129,7 +130,7 @@ impl CodexAppsToolsCacheContext {
             return self.current_tools().unwrap_or(tools);
         }
 
-        publication_state.last_accepted_generation = ticket.generation;
+        *last_accepted_generation = ticket.generation;
         self.entry
             .current_tools
             .store(Some(Arc::new(tools.clone())));
@@ -210,7 +211,7 @@ struct CodexAppsToolsCacheEntry {
     identity: CodexAppsToolsCacheIdentity,
     current_tools: ArcSwapOption<Vec<ToolInfo>>,
     next_fetch_generation: AtomicU64,
-    publication_state: Mutex<CodexAppsToolsPublicationState>,
+    last_accepted_generation: Mutex<u64>,
 }
 
 impl CodexAppsToolsCacheEntry {
@@ -220,14 +221,9 @@ impl CodexAppsToolsCacheEntry {
             identity,
             current_tools: ArcSwapOption::from(current_tools),
             next_fetch_generation: AtomicU64::new(0),
-            publication_state: Mutex::new(CodexAppsToolsPublicationState::default()),
+            last_accepted_generation: Mutex::new(0),
         }
     }
-}
-
-#[derive(Default)]
-struct CodexAppsToolsPublicationState {
-    last_accepted_generation: u64,
 }
 
 /// Everything that decides whether two Codex Apps clients can share tools.
@@ -239,7 +235,7 @@ struct CodexAppsToolsPublicationState {
 struct CodexAppsToolsCacheIdentity {
     codex_home: PathBuf,
     catalog_principal: CodexAppsCatalogPrincipal,
-    catalog_source_fingerprint: CodexAppsCatalogSourceFingerprint,
+    catalog_source_fingerprint: String,
 }
 
 impl CodexAppsToolsCacheIdentity {
@@ -256,9 +252,7 @@ impl CodexAppsToolsCacheIdentity {
                 // decides which catalog MCP returns, so it has to split the cache.
                 // Store only a fingerprint; never put the raw token in cache state
                 // or disk paths.
-                CodexAppsCatalogPrincipal::EnvBearerTokenFingerprint(
-                    CodexAppsBearerTokenFingerprint(sha1_hex(token)),
-                )
+                CodexAppsCatalogPrincipal::EnvBearerTokenFingerprint(sha1_hex(token))
             }
             None => CodexAppsCatalogPrincipal::CodexAuth(auth_key),
         };
@@ -284,44 +278,17 @@ enum CodexAppsCatalogPrincipal {
     /// Normal Codex Apps path: the active CodexAuth account/user/workspace.
     CodexAuth(CodexAppsToolsCacheKey),
     /// Env-token-backed path: the resolved bearer token selects the catalog.
-    EnvBearerTokenFingerprint(CodexAppsBearerTokenFingerprint),
+    EnvBearerTokenFingerprint(String),
 }
 
-/// Fingerprint of a resolved env-backed Codex Apps bearer token.
-///
-/// We use this only to keep two different env tokens from sharing a tools
-/// cache entry. The raw token never goes into the cache key or path.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-struct CodexAppsBearerTokenFingerprint(String);
-
-/// Fingerprint of the Codex Apps MCP config that can change the catalog source.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
-struct CodexAppsCatalogSourceFingerprint(String);
-
-/// Config fields that can change which Codex Apps catalog we query.
-///
-/// The transport includes the URL and configured headers, including the product
-/// SKU header added by `codex_apps_mcp_server_config`.
-#[derive(Serialize)]
-struct CodexAppsCatalogSource<'a> {
-    environment_id: &'a str,
-    transport: &'a codex_config::McpServerTransportConfig,
-}
-
-fn codex_apps_catalog_source_fingerprint(
-    config: &McpServerConfig,
-) -> CodexAppsCatalogSourceFingerprint {
+fn codex_apps_catalog_source_fingerprint(config: &McpServerConfig) -> String {
     // Header maps can serialize in different orders. Normalize first so the
     // same config still lands in the same cache entry.
-    let source = CodexAppsCatalogSource {
-        environment_id: &config.environment_id,
-        transport: &config.transport,
-    };
-    let source_json = serde_json::to_value(source)
-        .map(canonical_json)
-        .and_then(|source| serde_json::to_string(&source))
-        .unwrap_or_default();
-    CodexAppsCatalogSourceFingerprint(sha1_hex(&source_json))
+    let source = canonical_json(json!({
+        "environment_id": &config.environment_id,
+        "transport": &config.transport,
+    }));
+    sha1_hex(&serde_json::to_string(&source).unwrap_or_default())
 }
 
 fn canonical_json(value: JsonValue) -> JsonValue {
@@ -342,23 +309,16 @@ fn canonical_json(value: JsonValue) -> JsonValue {
 }
 
 #[cfg(test)]
-pub(crate) fn write_cached_codex_apps_tools_if_needed(
-    server_name: &str,
-    cache_context: Option<&CodexAppsToolsCacheContext>,
+pub(crate) fn write_cached_codex_apps_tools_for_test(
+    cache_context: &CodexAppsToolsCacheContext,
     server_info: &McpServerInfo,
     tools: &[ToolInfo],
 ) {
-    if server_name != CODEX_APPS_MCP_SERVER_NAME {
-        return;
-    }
-
-    if let Some(cache_context) = cache_context {
-        cache_context
-            .entry
-            .current_tools
-            .store(Some(Arc::new(tools.to_vec())));
-        persist_codex_apps_cache(cache_context, server_info, tools);
-    }
+    cache_context
+        .entry
+        .current_tools
+        .store(Some(Arc::new(tools.to_vec())));
+    persist_codex_apps_cache(cache_context, server_info, tools);
 }
 
 pub(crate) fn load_startup_cached_codex_apps_server_info(
