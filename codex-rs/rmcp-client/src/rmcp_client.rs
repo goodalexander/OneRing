@@ -70,6 +70,7 @@ use crate::oauth::OAuthPersistor;
 use crate::oauth::ResolvedOAuthCredentialStore;
 use crate::oauth::StoredOAuthTokens;
 use crate::oauth::load_oauth_tokens_with_source;
+use crate::oauth::request_oauth_token_response;
 use crate::stdio_server_launcher::StdioServerCommand;
 use crate::stdio_server_launcher::StdioServerLauncher;
 use crate::stdio_server_launcher::StdioServerProcessHandle;
@@ -449,7 +450,7 @@ impl RmcpClient {
         };
 
         let (service, oauth_persistor) = self
-            .connect_pending_transport_with_initialize_retries(
+            .connect_pending_transport_with_oauth_recovery(
                 pending_transport,
                 client_service.clone(),
                 timeout,
@@ -481,12 +482,6 @@ impl RmcpClient {
             };
         }
 
-        if let Some(runtime) = oauth_persistor
-            && let Err(error) = runtime.persist_if_needed().await
-        {
-            warn!("failed to persist OAuth tokens after initialize: {error}");
-        }
-
         Ok(initialize_result)
     }
 
@@ -502,7 +497,6 @@ impl RmcpClient {
                 async move { service.list_tools(params).await }.boxed()
             })
             .await?;
-        self.persist_oauth_tokens().await;
         Ok(result)
     }
 
@@ -536,7 +530,6 @@ impl RmcpClient {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        self.persist_oauth_tokens().await;
         Ok(ListToolsWithConnectorIdResult {
             next_cursor: result.next_cursor,
             tools,
@@ -563,7 +556,6 @@ impl RmcpClient {
                 async move { service.list_resources(params).await }.boxed()
             })
             .await?;
-        self.persist_oauth_tokens().await;
         Ok(result)
     }
 
@@ -579,7 +571,6 @@ impl RmcpClient {
                 async move { service.list_resource_templates(params).await }.boxed()
             })
             .await?;
-        self.persist_oauth_tokens().await;
         Ok(result)
     }
 
@@ -595,7 +586,6 @@ impl RmcpClient {
                 async move { service.read_resource(params).await }.boxed()
             })
             .await?;
-        self.persist_oauth_tokens().await;
         Ok(result)
     }
 
@@ -653,7 +643,6 @@ impl RmcpClient {
                 .boxed()
             })
             .await?;
-        self.persist_oauth_tokens().await;
         Ok(result)
     }
 
@@ -683,7 +672,6 @@ impl RmcpClient {
             },
         )
         .await?;
-        self.persist_oauth_tokens().await;
         Ok(())
     }
 
@@ -706,7 +694,6 @@ impl RmcpClient {
                 .boxed()
             })
             .await?;
-        self.persist_oauth_tokens().await;
         Ok(response)
     }
 
@@ -744,16 +731,6 @@ impl RmcpClient {
         }
 
         drop(previous_state);
-    }
-
-    /// This should be called after every tool call so that if a given tool call triggered
-    /// a refresh of the OAuth tokens, they are persisted.
-    async fn persist_oauth_tokens(&self) {
-        if let Some(runtime) = self.oauth_persistor().await
-            && let Err(error) = runtime.persist_if_needed().await
-        {
-            warn!("failed to persist OAuth tokens: {error}");
-        }
     }
 
     async fn refresh_oauth_if_needed(&self) -> Result<()> {
@@ -908,9 +885,15 @@ impl RmcpClient {
             } => {
                 match remaining_initialize_timeout(timeout, deadline)? {
                     Some(remaining) => {
-                        time::timeout(remaining, oauth_persistor.refresh_if_needed())
+                        if let Err(error) = oauth_persistor
+                            .refresh_if_needed_with_timeout(remaining)
                             .await
-                            .map_err(|_| initialize_timeout_error(timeout, remaining))??;
+                        {
+                            if remaining_initialize_timeout(timeout, deadline).is_err() {
+                                return Err(initialize_timeout_error(timeout, remaining));
+                            }
+                            return Err(error);
+                        }
                     }
                     None => oauth_persistor.refresh_if_needed().await?,
                 }
@@ -935,19 +918,7 @@ impl RmcpClient {
                 .await
                 .map_err(|source| anyhow::Error::from(HandshakeError { source })),
         };
-        let service = match service_result {
-            Ok(service) => service,
-            Err(error) => {
-                if let Some(runtime) = oauth_persistor.as_ref()
-                    && let Err(persist_error) = runtime.persist_if_needed().await
-                {
-                    warn!(
-                        "failed to persist OAuth tokens after failed initialize: {persist_error}"
-                    );
-                }
-                return Err(error);
-            }
-        };
+        let service = service_result?;
 
         Ok((Arc::new(service), oauth_persistor))
     }
@@ -962,38 +933,75 @@ impl RmcpClient {
         F: Fn(Arc<RunningService<RoleClient, ElicitationClientService>>) -> Fut,
         Fut: std::future::Future<Output = std::result::Result<T, rmcp::service::ServiceError>>,
     {
+        let deadline = timeout.map(|duration| Instant::now() + duration);
         let service = self.service().await?;
-        match Self::run_service_operation_with_transient_retries(
+        let mut result = Self::run_service_operation_with_transient_retries(
             Arc::clone(&service),
             label,
             timeout,
+            deadline,
             self.elicitation_pause_state.clone(),
             &operation,
         )
-        .await
+        .await;
+
+        if result
+            .as_ref()
+            .is_err_and(Self::is_unauthorized_operation_error)
+            && let Some(oauth_persistor) = self.oauth_persistor().await
         {
-            Ok(result) => Ok(result),
-            Err(error) if Self::is_session_expired_404(&error) => {
-                self.reinitialize_after_session_expiry(&service).await?;
-                let recovered_service = self.service().await?;
-                Self::run_service_operation_with_transient_retries(
-                    recovered_service,
-                    label,
-                    timeout,
-                    self.elicitation_pause_state.clone(),
-                    &operation,
-                )
-                .await
-                .map_err(Into::into)
+            // OAuth recovery is intentionally one-shot. The same caller deadline covers the
+            // refresh and retry, while the refresh transaction still finishes restoring
+            // request-only credentials and persisting any provider-rotated token.
+            let refresh_result = match remaining_operation_timeout(label, timeout, deadline)? {
+                Some(remaining) => {
+                    oauth_persistor
+                        .refresh_after_unauthorized_with_timeout(remaining)
+                        .await
+                }
+                None => oauth_persistor.refresh_after_unauthorized().await,
+            };
+            if let Err(error) = refresh_result {
+                if let Err(timeout_error) = remaining_operation_timeout(label, timeout, deadline) {
+                    return Err(timeout_error.into());
+                }
+                return Err(error);
             }
-            Err(error) => Err(error.into()),
+            result = Self::run_service_operation_with_transient_retries(
+                Arc::clone(&service),
+                label,
+                timeout,
+                deadline,
+                self.elicitation_pause_state.clone(),
+                &operation,
+            )
+            .await;
         }
+
+        if result.as_ref().is_err_and(Self::is_session_expired_404) {
+            // Session recovery remains one-shot and runs after the optional OAuth retry, so a 401
+            // followed by the old session's 404 still reconstructs the transport before retrying.
+            self.reinitialize_after_session_expiry(&service).await?;
+            let recovered_service = self.service().await?;
+            result = Self::run_service_operation_with_transient_retries(
+                recovered_service,
+                label,
+                timeout,
+                deadline,
+                self.elicitation_pause_state.clone(),
+                &operation,
+            )
+            .await;
+        }
+
+        result.map_err(Into::into)
     }
 
     async fn run_service_operation_with_transient_retries<T, F, Fut>(
         service: Arc<RunningService<RoleClient, ElicitationClientService>>,
         label: &str,
         timeout: Option<Duration>,
+        retry_deadline: Option<Instant>,
         pause_state: ElicitationPauseState,
         operation: &F,
     ) -> std::result::Result<T, ClientOperationError>
@@ -1001,7 +1009,6 @@ impl RmcpClient {
         F: Fn(Arc<RunningService<RoleClient, ElicitationClientService>>) -> Fut,
         Fut: std::future::Future<Output = std::result::Result<T, rmcp::service::ServiceError>>,
     {
-        let retry_deadline = timeout.map(|duration| Instant::now() + duration);
         for (attempt, retry_delay_ms) in STREAMABLE_HTTP_RETRY_DELAYS_MS
             .iter()
             .copied()
@@ -1107,6 +1114,31 @@ impl RmcpClient {
             })
     }
 
+    fn is_unauthorized_operation_error(error: &ClientOperationError) -> bool {
+        let ClientOperationError::Service(rmcp::service::ServiceError::TransportSend(error)) =
+            error
+        else {
+            return false;
+        };
+
+        error
+            .error
+            .downcast_ref::<StreamableHttpError<StreamableHttpClientAdapterError>>()
+            .is_some_and(Self::is_unauthorized_streamable_http_error)
+    }
+
+    pub(super) fn is_unauthorized_streamable_http_error(
+        error: &StreamableHttpError<StreamableHttpClientAdapterError>,
+    ) -> bool {
+        match error {
+            StreamableHttpError::AuthRequired(_) => true,
+            StreamableHttpError::UnexpectedServerResponse(message) => {
+                message.starts_with("HTTP 401")
+            }
+            _ => false,
+        }
+    }
+
     async fn reinitialize_after_session_expiry(
         &self,
         failed_service: &Arc<RunningService<RoleClient, ElicitationClientService>>,
@@ -1141,7 +1173,7 @@ impl RmcpClient {
             .ok_or_else(|| anyhow!("MCP client cannot recover before initialize succeeds"))?;
         let pending_transport = Self::create_pending_transport(&self.transport_recipe).await?;
         let (service, oauth_persistor) = self
-            .connect_pending_transport_with_initialize_retries(
+            .connect_pending_transport_with_oauth_recovery(
                 pending_transport,
                 initialize_context.client_service,
                 initialize_context.timeout,
@@ -1157,12 +1189,6 @@ impl RmcpClient {
                 service,
                 oauth: oauth_persistor.clone(),
             };
-        }
-
-        if let Some(runtime) = oauth_persistor
-            && let Err(error) = runtime.persist_if_needed().await
-        {
-            warn!("failed to persist OAuth tokens after session recovery: {error}");
         }
 
         Ok(())
@@ -1194,7 +1220,7 @@ async fn create_oauth_transport_and_runtime(
     oauth_state
         .set_credentials(
             &initial_tokens.client_id,
-            initial_tokens.token_response.0.clone(),
+            request_oauth_token_response(&initial_tokens),
         )
         .await?;
 
