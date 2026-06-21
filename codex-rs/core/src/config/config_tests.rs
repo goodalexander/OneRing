@@ -703,7 +703,7 @@ async fn load_config_defaults_to_ambient_provider_and_model() -> std::io::Result
 
     assert_eq!(config.model_provider_id, AMBIENT_PROVIDER_ID);
     assert_eq!(config.model.as_deref(), Some(AMBIENT_DEFAULT_MODEL));
-    assert_eq!(config.model_provider.wire_api, WireApi::Responses);
+    assert_eq!(config.model_provider.wire_api, WireApi::Chat);
     assert_eq!(config.forced_login_method, Some(ForcedLoginMethod::Api));
 
     Ok(())
@@ -734,7 +734,7 @@ wire_api = "responses"
 
     assert_eq!(config.model_provider_id, AMBIENT_PROVIDER_ID);
     assert_eq!(config.model.as_deref(), Some("ambient/large"));
-    assert_eq!(config.model_provider.wire_api, WireApi::Responses);
+    assert_eq!(config.model_provider.wire_api, WireApi::Chat);
 
     Ok(())
 }
@@ -758,7 +758,7 @@ model = "gpt-5.5"
 
     assert_eq!(config.model_provider_id, AMBIENT_PROVIDER_ID);
     assert_eq!(config.model.as_deref(), Some(AMBIENT_DEFAULT_MODEL));
-    assert_eq!(config.model_provider.wire_api, WireApi::Responses);
+    assert_eq!(config.model_provider.wire_api, WireApi::Chat);
 
     Ok(())
 }
@@ -5525,7 +5525,7 @@ async fn responses_websocket_features_do_not_change_wire_api() -> std::io::Resul
         )
         .await?;
 
-        assert_eq!(config.model_provider.wire_api, WireApi::Responses);
+        assert_eq!(config.model_provider.wire_api, WireApi::Chat);
     }
 
     Ok(())

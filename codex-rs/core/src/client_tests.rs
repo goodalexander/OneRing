@@ -400,6 +400,50 @@ fn ambient_responses_request_uses_zai_reasoning_fields() {
     assert_eq!(deep.reasoning_effort.as_deref(), Some("max"));
 }
 
+#[test]
+fn ambient_chat_completions_request_uses_zai_reasoning_fields() {
+    let provider_info = ModelProviderInfo::create_ambient_provider();
+    let client = ModelClient::new(
+        /*auth_manager*/ None,
+        ThreadId::new(),
+        provider_info,
+        SessionSource::Cli,
+        /*model_verbosity*/ None,
+        /*enable_request_compression*/ false,
+        /*include_timing_metrics*/ false,
+        /*beta_features_header*/ None,
+        /*item_ids_enabled*/ false,
+        /*attestation_provider*/ None,
+    );
+    let prompt = super::Prompt {
+        input: vec![ResponseItem::Message {
+            id: None,
+            role: "user".to_string(),
+            content: vec![ContentItem::InputText {
+                text: "hello".to_string(),
+            }],
+            phase: None,
+            metadata: None,
+        }],
+        ..Default::default()
+    };
+    let model_info = test_ambient_model_info();
+
+    let standard = client
+        .build_chat_completions_request(&prompt, &model_info, Some(ReasoningEffortConfig::Medium))
+        .expect("standard Ambient chat request");
+    assert_eq!(standard.enable_thinking, Some(true));
+    assert_eq!(standard.emit_usage, Some(true));
+    assert_eq!(standard.reasoning_effort.as_deref(), Some("high"));
+
+    let deep = client
+        .build_chat_completions_request(&prompt, &model_info, Some(ReasoningEffortConfig::XHigh))
+        .expect("deep Ambient chat request");
+    assert_eq!(deep.enable_thinking, Some(true));
+    assert_eq!(deep.emit_usage, Some(true));
+    assert_eq!(deep.reasoning_effort.as_deref(), Some("max"));
+}
+
 #[derive(Default)]
 struct TagCollectorVisitor {
     tags: BTreeMap<String, String>,

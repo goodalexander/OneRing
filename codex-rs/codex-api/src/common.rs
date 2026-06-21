@@ -434,6 +434,12 @@ pub struct ChatCompletionsRequest {
     pub parallel_tool_calls: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emit_usage: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_thinking: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]

@@ -901,6 +901,7 @@ impl ModelClient {
         &self,
         prompt: &Prompt,
         model_info: &ModelInfo,
+        effort: Option<ReasoningEffortConfig>,
     ) -> Result<ChatCompletionsRequest> {
         let mut messages = Vec::new();
         let instructions = prompt.base_instructions.text.trim();
@@ -923,6 +924,14 @@ impl ModelClient {
         // provider-incompatible wrapper bit for Ambient only.
         let strip_strict_from_tools = self.state.provider.info().is_ambient();
         let tools = create_tools_json_for_chat_completions(&prompt.tools, strip_strict_from_tools)?;
+        let ambient_reasoning_effort = strip_strict_from_tools.then(|| {
+            Self::ambient_zai_reasoning_effort(
+                effort
+                    .as_ref()
+                    .or(model_info.default_reasoning_level.as_ref()),
+            )
+            .to_string()
+        });
         let response_format = prompt.output_schema.as_ref().map(|schema| {
             json!({
                 "type": "json_schema",
@@ -945,6 +954,9 @@ impl ModelClient {
             parallel_tool_calls: (!tools.is_empty() && prompt.parallel_tool_calls).then_some(true),
             tools,
             response_format,
+            emit_usage: strip_strict_from_tools.then_some(true),
+            enable_thinking: strip_strict_from_tools.then_some(true),
+            reasoning_effort: ambient_reasoning_effort,
         })
     }
 
@@ -1413,6 +1425,7 @@ impl ModelClientSession {
         prompt: &Prompt,
         model_info: &ModelInfo,
         session_telemetry: &SessionTelemetry,
+        effort: Option<ReasoningEffortConfig>,
         responses_metadata: &CodexResponsesMetadata,
         inference_trace: &InferenceTraceContext,
     ) -> Result<ResponseStream> {
@@ -1438,9 +1451,9 @@ impl ModelClientSession {
             let mut options = self
                 .build_chat_completions_options(responses_metadata)
                 .await;
-            let request = self
-                .client
-                .build_chat_completions_request(prompt, model_info)?;
+            let request =
+                self.client
+                    .build_chat_completions_request(prompt, model_info, effort.clone())?;
             let inference_trace_attempt = inference_trace.start_attempt();
             inference_trace_attempt.add_request_headers(&mut options.extra_headers);
             inference_trace_attempt.record_started(&request);
@@ -1931,6 +1944,7 @@ impl ModelClientSession {
                     prompt,
                     model_info,
                     session_telemetry,
+                    effort,
                     responses_metadata,
                     inference_trace,
                 )
