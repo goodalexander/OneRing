@@ -191,6 +191,19 @@ fn to_error_event_handles_response_stream_failed() {
 }
 
 #[test]
+fn retry_limit_429_message_tells_user_to_wait() {
+    let err = RetryLimitReachedError {
+        status: StatusCode::TOO_MANY_REQUESTS,
+        request_id: Some("req-429".to_string()),
+    };
+
+    assert_eq!(
+        err.to_string(),
+        "rate limited by provider after retry limit (429 Too Many Requests). Wait before continuing; immediate retry may fail again, request id: req-429"
+    );
+}
+
+#[test]
 fn sandbox_denied_reports_exit_code_when_no_output_available() {
     let output = ExecToolCallOutput {
         exit_code: 13,

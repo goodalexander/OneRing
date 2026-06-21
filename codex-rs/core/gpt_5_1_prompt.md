@@ -281,7 +281,7 @@ For casual greetings, acknowledgements, or other one-off conversational messages
 
 When using the shell, you must adhere to the following guidelines:
 
-- When searching for text or files, prefer using `rg` or `rg --files` respectively because `rg` is much faster than alternatives like `grep`. (If the `rg` command is not found, then use alternatives.)
+- When searching for text or files, use `rg` or `rg --files` first because `rg` is much faster than alternatives like `grep`. Do not run recursive `grep` over a repo root. If `rg` is unavailable and `grep` is necessary, restrict it to source directories and exclude heavy directories such as `.git`, `target`, `node_modules`, `dist`, `build`, `.next`, and `vendor`.
 - Do not use python scripts to attempt to output larger chunks of a file.
 
 ## apply_patch

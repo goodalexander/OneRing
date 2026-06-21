@@ -983,6 +983,11 @@ fn bundled_models_json_contains_ambient_models() {
     );
     assert_eq!(ambient_default.visibility, ModelVisibility::List);
     assert!(ambient_default.supports_parallel_tool_calls);
+    assert!(
+        ambient_default
+            .base_instructions
+            .contains("Never run recursive grep over a repo root")
+    );
     assert!(!ambient_default.used_fallback_model_metadata);
 
     let ambient = response
@@ -995,5 +1000,10 @@ fn bundled_models_json_contains_ambient_models() {
     assert_eq!(ambient.context_window, Some(131_072));
     assert_eq!(ambient.visibility, ModelVisibility::Hide);
     assert!(ambient.supports_parallel_tool_calls);
+    assert!(
+        ambient
+            .base_instructions
+            .contains("Never run recursive grep over a repo root")
+    );
     assert!(!ambient.used_fallback_model_metadata);
 }

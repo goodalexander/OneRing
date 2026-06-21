@@ -434,14 +434,23 @@ pub struct RetryLimitReachedError {
 
 impl std::fmt::Display for RetryLimitReachedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let request_id = self
+            .request_id
+            .as_ref()
+            .map(|id| format!(", request id: {id}"))
+            .unwrap_or_default();
+        if self.status == StatusCode::TOO_MANY_REQUESTS {
+            return write!(
+                f,
+                "rate limited by provider after retry limit ({}). Wait before continuing; immediate retry may fail again{}",
+                self.status, request_id
+            );
+        }
+
         write!(
             f,
             "exceeded retry limit, last status: {}{}",
-            self.status,
-            self.request_id
-                .as_ref()
-                .map(|id| format!(", request id: {id}"))
-                .unwrap_or_default()
+            self.status, request_id
         )
     }
 }
