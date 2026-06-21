@@ -82,7 +82,6 @@ use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
 use codex_protocol::config_types::Verbosity as VerbosityConfig;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
-use codex_protocol::models::plaintext_agent_message_content;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ReasoningEffort as ReasoningEffortConfig;
 use codex_protocol::protocol::InternalSessionSource;
@@ -1971,16 +1970,7 @@ fn append_chat_messages_for_response_item(item: ResponseItem, messages: &mut Vec
                 });
             }
         }
-        ResponseItem::AgentMessage { content, .. } => {
-            if let Some(content) = plaintext_agent_message_content(&content) {
-                messages.push(ChatMessage {
-                    role: "assistant".to_string(),
-                    content: Some(content),
-                    tool_call_id: None,
-                    tool_calls: Vec::new(),
-                });
-            }
-        }
+        ResponseItem::AgentMessage { .. } => {}
         ResponseItem::FunctionCall {
             name,
             arguments,

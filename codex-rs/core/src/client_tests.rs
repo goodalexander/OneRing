@@ -27,6 +27,7 @@ use codex_model_provider_info::create_oss_provider_with_base_url;
 use codex_otel::SessionTelemetry;
 use codex_protocol::ThreadId;
 use codex_protocol::config_types::ReasoningSummary as ReasoningSummaryConfig;
+use codex_protocol::models::AgentMessageInputContent;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::ResponseItem;
 use codex_protocol::openai_models::ModelInfo;
@@ -277,6 +278,54 @@ fn ambient_chat_completions_strips_strict_from_tools() {
             .and_then(|value| value.as_bool()),
         Some(false)
     );
+}
+
+#[test]
+fn chat_completions_omits_agent_messages_from_history() {
+    let mut messages = Vec::new();
+    super::append_chat_messages_for_response_item(
+        ResponseItem::AgentMessage {
+            id: None,
+            author: "assistant".to_string(),
+            recipient: "user".to_string(),
+            content: vec![AgentMessageInputContent::InputText {
+                text: concat!(
+                    "assistant:\n",
+                    "{\"type\":\"function_call\",\"name\":\"exec_command\",",
+                    "\"arguments\":\"{\\\"cmd\\\": \\\"ls\\\"}\",",
+                    "\"call_id\":\"chatcmpl-tool-123\"}\n\n",
+                    "tool:\n",
+                    "{\"type\":\"function_call_output\",",
+                    "\"call_id\":\"chatcmpl-tool-123\",\"output\":\"ok\"}"
+                )
+                .to_string(),
+            }],
+            metadata: None,
+        },
+        &mut messages,
+    );
+
+    assert!(
+        messages.is_empty(),
+        "AgentMessage is display/transcript state and must not be replayed to Chat Completions"
+    );
+
+    super::append_chat_messages_for_response_item(
+        ResponseItem::Message {
+            id: None,
+            role: "assistant".to_string(),
+            content: vec![ContentItem::OutputText {
+                text: "real assistant text".to_string(),
+            }],
+            phase: None,
+            metadata: None,
+        },
+        &mut messages,
+    );
+
+    assert_eq!(messages.len(), 1);
+    assert_eq!(messages[0].role, "assistant");
+    assert_eq!(messages[0].content.as_deref(), Some("real assistant text"));
 }
 
 #[test]
