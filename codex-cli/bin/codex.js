@@ -13,12 +13,12 @@ const __dirname = path.dirname(__filename);
 const require = createRequire(import.meta.url);
 
 const PLATFORM_PACKAGE_BY_TARGET = {
-  "x86_64-unknown-linux-musl": "@openai/codex-linux-x64",
-  "aarch64-unknown-linux-musl": "@openai/codex-linux-arm64",
-  "x86_64-apple-darwin": "@openai/codex-darwin-x64",
-  "aarch64-apple-darwin": "@openai/codex-darwin-arm64",
-  "x86_64-pc-windows-msvc": "@openai/codex-win32-x64",
-  "aarch64-pc-windows-msvc": "@openai/codex-win32-arm64",
+  "x86_64-unknown-linux-musl": "@agticorp/pfterminal-linux-x64",
+  "aarch64-unknown-linux-musl": "@agticorp/pfterminal-linux-arm64",
+  "x86_64-apple-darwin": "@agticorp/pfterminal-darwin-x64",
+  "aarch64-apple-darwin": "@agticorp/pfterminal-darwin-arm64",
+  "x86_64-pc-windows-msvc": "@agticorp/pfterminal-win32-x64",
+  "aarch64-pc-windows-msvc": "@agticorp/pfterminal-win32-arm64",
 };
 
 const { platform, arch } = process;
@@ -97,10 +97,10 @@ function findCodexExecutable() {
   const packageManager = detectPackageManager();
   const updateCommand =
     packageManager === "bun"
-      ? "bun install -g @openai/codex@latest"
-      : "npm install -g @openai/codex@latest";
+      ? "bun install -g @agticorp/pfterminal@latest"
+      : "npm install -g @agticorp/pfterminal@latest";
   throw new Error(
-    `Missing optional dependency ${platformPackage}. Reinstall Codex: ${updateCommand}`,
+    `Missing optional dependency ${platformPackage}. Reinstall PFTerminal: ${updateCommand}`,
   );
 }
 
@@ -113,7 +113,7 @@ const binaryPath = findCodexExecutable();
 // receives a fatal signal, both processes exit in a predictable manner.
 
 /**
- * Use heuristics to detect the package manager that was used to install Codex
+ * Use heuristics to detect the package manager that was used to install PFTerminal
  * in order to give the user a hint about how to update it.
  */
 function detectPackageManager() {

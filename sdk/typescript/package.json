@@ -1,15 +1,15 @@
 {
-  "name": "@openai/codex-sdk",
+  "name": "@agticorp/pfterminal-sdk",
   "version": "0.0.0-dev",
-  "description": "TypeScript SDK for Codex APIs.",
+  "description": "TypeScript SDK for PFTerminal APIs.",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/openai/codex.git",
+    "url": "git+https://github.com/agticorp/PfTerminal.git",
     "directory": "sdk/typescript"
   },
   "keywords": [
-    "openai",
-    "codex",
+    "pfterminal",
+    "ambient",
     "sdk",
     "typescript",
     "api"

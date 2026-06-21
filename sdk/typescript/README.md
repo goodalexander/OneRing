@@ -1,13 +1,13 @@
-# Codex SDK
+# PFTerminal SDK
 
-Embed the Codex agent in your workflows and apps.
+Embed the PFTerminal agent in your workflows and apps.
 
-The TypeScript SDK wraps the `codex` CLI from `@openai/codex`. It spawns the CLI and exchanges JSONL events over stdin/stdout.
+The TypeScript SDK wraps the `codex` CLI from `@agticorp/pfterminal`. It spawns the CLI and exchanges JSONL events over stdin/stdout.
 
 ## Installation
 
 ```bash
-npm install @openai/codex-sdk
+npm install @agticorp/pfterminal-sdk
 ```
 
 Requires Node.js 18+.
@@ -15,7 +15,7 @@ Requires Node.js 18+.
 ## Quickstart
 
 ```typescript
-import { Codex } from "@openai/codex-sdk";
+import { Codex } from "@agticorp/pfterminal-sdk";
 
 const codex = new Codex();
 const thread = codex.startThread();

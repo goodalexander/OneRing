@@ -1,3 +1,3 @@
-# Codex CLI
+# PFTerminal Rust Workspace
 
-[**Codex CLI Documentation**](https://developers.openai.com/codex/cli)
+This directory contains the Rust CLI workspace inherited from the open-source Codex CLI.

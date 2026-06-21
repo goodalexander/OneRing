@@ -420,7 +420,7 @@ impl AuthModeWidget {
             vec![
                 Line::from(vec![
                     "  ".into(),
-                    "Connect an Ambient API key to use OneRing".into(),
+                    "Connect an Ambient API key to use PFTerminal".into(),
                 ]),
                 "".into(),
             ]
@@ -648,7 +648,7 @@ impl AuthModeWidget {
             "✓ API key configured"
         };
         let usage_message = if self.ambient_api_key_required() {
-            "  OneRing will use Ambient with your API key."
+            "  PFTerminal will use Ambient with your API key."
         } else {
             "  Codex will use usage-based billing with your API key."
         };

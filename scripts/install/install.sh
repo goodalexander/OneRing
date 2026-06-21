@@ -55,7 +55,7 @@ validate_version() {
   fi
 
   if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta)(\.[0-9]+)?)?$'; then
-    echo "Invalid Codex release version: $version. Expected latest or x.y.z[-alpha[.N]|-beta[.N]]." >&2
+    echo "Invalid PFTerminal release version: $version. Expected latest or x.y.z[-alpha[.N]|-beta[.N]]." >&2
     exit 1
   fi
 }
@@ -104,7 +104,7 @@ download_file() {
     return
   fi
 
-  echo "curl or wget is required to install Codex." >&2
+  echo "curl or wget is required to install PFTerminal." >&2
   exit 1
 }
 
@@ -121,7 +121,7 @@ download_text() {
     return
   fi
 
-  echo "curl or wget is required to install Codex." >&2
+  echo "curl or wget is required to install PFTerminal." >&2
   exit 1
 }
 
@@ -129,13 +129,13 @@ release_url_for_asset() {
   asset="$1"
   resolved_version="$2"
 
-  printf 'https://github.com/openai/codex/releases/download/rust-v%s/%s\n' "$resolved_version" "$asset"
+  printf 'https://github.com/agticorp/PfTerminal/releases/download/rust-v%s/%s\n' "$resolved_version" "$asset"
 }
 
 release_metadata_url() {
   resolved_version="$1"
 
-  printf 'https://api.github.com/repos/openai/codex/releases/tags/rust-v%s\n' "$resolved_version"
+  printf 'https://api.github.com/repos/agticorp/PfTerminal/releases/tags/rust-v%s\n' "$resolved_version"
 }
 
 release_asset_digest_or_empty() {
@@ -251,7 +251,7 @@ file_sha256() {
     return
   fi
 
-  echo "sha256sum, shasum, or openssl is required to verify the Codex download." >&2
+  echo "sha256sum, shasum, or openssl is required to verify the PFTerminal download." >&2
   exit 1
 }
 
@@ -261,7 +261,7 @@ verify_archive_digest() {
   actual_digest="$(file_sha256 "$archive_path")"
 
   if [ "$actual_digest" != "$expected_digest" ]; then
-    echo "Downloaded Codex archive checksum did not match expected digest." >&2
+    echo "Downloaded PFTerminal archive checksum did not match expected digest." >&2
     echo "expected: $expected_digest" >&2
     echo "actual:   $actual_digest" >&2
     exit 1
@@ -270,7 +270,7 @@ verify_archive_digest() {
 
 require_command() {
   if ! command -v "$1" >/dev/null 2>&1; then
-    echo "$1 is required to install Codex." >&2
+    echo "$1 is required to install PFTerminal." >&2
     exit 1
   fi
 }
@@ -284,11 +284,11 @@ resolve_version() {
     return
   fi
 
-  release_json="$(download_text "https://api.github.com/repos/openai/codex/releases/latest")"
+  release_json="$(download_text "https://api.github.com/repos/agticorp/PfTerminal/releases/latest")"
   resolved="$(printf '%s\n' "$release_json" | sed -n 's/.*"tag_name":[[:space:]]*"rust-v\([^"]*\)".*/\1/p' | head -n 1)"
 
   if [ -z "$resolved" ]; then
-    echo "Failed to resolve the latest Codex release version." >&2
+    echo "Failed to resolve the latest PFTerminal release version." >&2
     exit 1
   fi
 
@@ -332,8 +332,8 @@ add_to_path() {
 
   profile="$(pick_profile)"
   path_profile="$profile"
-  begin_marker="# >>> Codex installer >>>"
-  end_marker="# <<< Codex installer <<<"
+  begin_marker="# >>> PFTerminal installer >>>"
+  end_marker="# <<< PFTerminal installer <<<"
   path_line="export PATH=\"$BIN_DIR:\$PATH\""
 
   if [ -f "$profile" ] && grep -F "$begin_marker" "$profile" >/dev/null 2>&1; then
@@ -621,8 +621,8 @@ print_launch_instructions() {
 }
 
 maybe_launch_codex_now() {
-  if prompt_yes_no "Start Codex now?"; then
-    step "Launching Codex"
+  if prompt_yes_no "Start PFTerminal now?"; then
+    step "Launching PFTerminal"
     "$BIN_PATH"
   fi
 }
@@ -637,8 +637,8 @@ detect_conflicting_install() {
 
   conflict_manager="$manager"
   conflict_path="$existing_path"
-  step "Detected existing $manager-managed Codex at $existing_path"
-  warn "Multiple managed Codex installs can be ambiguous because PATH order decides which one runs."
+  step "Detected existing $manager-managed PFTerminal at $existing_path"
+  warn "Multiple managed PFTerminal installs can be ambiguous because PATH order decides which one runs."
 }
 
 handle_conflicting_install() {
@@ -651,20 +651,20 @@ handle_conflicting_install() {
       uninstall_cmd="brew uninstall --cask codex"
       ;;
     bun)
-      uninstall_cmd="bun remove -g @openai/codex"
+      uninstall_cmd="bun remove -g @agticorp/pfterminal"
       ;;
     *)
-      uninstall_cmd="npm uninstall -g @openai/codex"
+      uninstall_cmd="npm uninstall -g @agticorp/pfterminal"
       ;;
   esac
 
-  if prompt_yes_no "Uninstall the existing $conflict_manager-managed Codex now?"; then
+  if prompt_yes_no "Uninstall the existing $conflict_manager-managed PFTerminal now?"; then
     step "Running: $uninstall_cmd"
     if ! sh -c "$uninstall_cmd"; then
-      warn "Failed to uninstall the existing $conflict_manager-managed Codex. Continuing with the standalone install."
+      warn "Failed to uninstall the existing $conflict_manager-managed PFTerminal. Continuing with the standalone install."
     fi
   else
-    warn "Leaving the existing $conflict_manager-managed Codex installed. PATH order will determine which codex runs."
+    warn "Leaving the existing $conflict_manager-managed PFTerminal installed. PATH order will determine which codex runs."
   fi
 }
 
@@ -850,7 +850,7 @@ elif release_asset_exists "codex-npm-$npm_tag-$resolved_version.tgz" "$resolved_
   install_layout="legacy-platform-npm"
   asset="codex-npm-$npm_tag-$resolved_version.tgz"
 else
-  echo "Could not find Codex package or platform npm release assets for Codex $resolved_version." >&2
+  echo "Could not find PFTerminal package or platform npm release assets for PFTerminal $resolved_version." >&2
   exit 1
 fi
 download_url="$(release_url_for_asset "$asset" "$resolved_version")"
@@ -860,11 +860,11 @@ release_dir="$RELEASES_DIR/$release_name"
 current_version="$(current_installed_version)"
 
 if [ -n "$current_version" ] && [ "$current_version" != "$resolved_version" ]; then
-  step "Updating Codex CLI from $current_version to $resolved_version"
+  step "Updating PFTerminal CLI from $current_version to $resolved_version"
 elif [ -n "$current_version" ]; then
-  step "Updating Codex CLI"
+  step "Updating PFTerminal CLI"
 else
-  step "Installing Codex CLI"
+  step "Installing PFTerminal CLI"
 fi
 step "Detected platform: $platform_label"
 step "Resolved version: $resolved_version"
@@ -891,7 +891,7 @@ if ! release_dir_is_complete "$release_dir" "$resolved_version" "$vendor_target"
   archive_path="$tmp_dir/$asset"
   checksum_path="$tmp_dir/$checksum_asset"
 
-  step "Downloading Codex CLI"
+  step "Downloading PFTerminal CLI"
   if [ "$install_layout" = "package" ]; then
     checksum_digest="$(release_asset_digest "$checksum_asset" "$resolved_version")"
     download_file "$checksum_url" "$checksum_path"
@@ -933,5 +933,5 @@ case "$path_action" in
     ;;
 esac
 
-printf 'Codex CLI %s installed successfully.\n' "$resolved_version"
+printf 'PFTerminal CLI %s installed successfully.\n' "$resolved_version"
 maybe_launch_codex_now
