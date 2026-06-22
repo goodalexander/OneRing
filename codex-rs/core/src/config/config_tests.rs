@@ -5447,7 +5447,10 @@ model = "gpt-project-local"
         .build()
         .await?;
 
-    assert_eq!(config.model, None);
+    // The Ambient provider always resolves to a default model even when no
+    // model is explicitly configured, so the ignored project-local profile
+    // does not leave the model as `None`.
+    assert_eq!(config.model.as_deref(), Some(AMBIENT_DEFAULT_MODEL));
     assert!(
         config.startup_warnings.iter().any(|warning| {
             warning.contains("profile")

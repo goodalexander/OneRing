@@ -37,6 +37,8 @@ use core_test_support::responses::ev_completed;
 use core_test_support::responses::ev_response_created;
 use core_test_support::responses::mount_response_once;
 use core_test_support::responses::mount_sse_once;
+use core_test_support::responses::mount_sse_once_chat_completions;
+use core_test_support::responses::chat_completions_sse;
 use core_test_support::responses::sse;
 use core_test_support::responses::sse_response;
 use core_test_support::responses::start_mock_server;
@@ -70,22 +72,17 @@ where
 #[tokio::test]
 async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
     let server = start_mock_server().await;
-    let guardian_request_log = mount_sse_once(
+    // The default Ambient provider uses the Chat Completions wire API.
+    let guardian_assessment = serde_json::json!({
+        "risk_level": "low",
+        "user_authorization": "high",
+        "outcome": "allow",
+        "rationale": "The request grants narrowly scoped network access for this turn.",
+    })
+    .to_string();
+    let guardian_request_log = mount_sse_once_chat_completions(
         &server,
-        sse(vec![
-            ev_response_created("resp-guardian"),
-            ev_assistant_message(
-                "msg-guardian",
-                &serde_json::json!({
-                    "risk_level": "low",
-                    "user_authorization": "high",
-                    "outcome": "allow",
-                    "rationale": "The request grants narrowly scoped network access for this turn.",
-                })
-                .to_string(),
-            ),
-            ev_completed("resp-guardian"),
-        ]),
+        chat_completions_sse("zai-org/GLM-5.2-FP8", &guardian_assessment),
     )
     .await;
 
@@ -161,7 +158,7 @@ async fn request_permissions_routes_to_guardian_when_reviewer_is_enabled() {
     );
 
     let guardian_request = guardian_request_log.single_request();
-    assert_eq!(guardian_request.path(), "/v1/responses");
+    assert_eq!(guardian_request.path(), "/v1/chat/completions");
     assert!(guardian_request.body_contains_text("request_permissions"));
     assert!(guardian_request.body_contains_text("need network"));
 }
@@ -365,22 +362,17 @@ async fn guardian_allows_shell_command_additional_permissions_requests_past_poli
 #[tokio::test]
 async fn strict_auto_review_turn_grant_forces_guardian_for_shell_command_policy_skip() {
     let server = start_mock_server().await;
-    let guardian_request_log = mount_sse_once(
+    // The default Ambient provider uses the Chat Completions wire API.
+    let guardian_assessment = serde_json::json!({
+        "risk_level": "low",
+        "user_authorization": "high",
+        "outcome": "allow",
+        "rationale": "The command stays within the strict turn permission grant.",
+    })
+    .to_string();
+    let guardian_request_log = mount_sse_once_chat_completions(
         &server,
-        sse(vec![
-            ev_response_created("resp-guardian"),
-            ev_assistant_message(
-                "msg-guardian",
-                &serde_json::json!({
-                    "risk_level": "low",
-                    "user_authorization": "high",
-                    "outcome": "allow",
-                    "rationale": "The command stays within the strict turn permission grant.",
-                })
-                .to_string(),
-            ),
-            ev_completed("resp-guardian"),
-        ]),
+        chat_completions_sse("zai-org/GLM-5.2-FP8", &guardian_assessment),
     )
     .await;
 

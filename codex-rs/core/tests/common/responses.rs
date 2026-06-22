@@ -1001,6 +1001,64 @@ pub async fn mount_sse_once(server: &MockServer, body: String) -> ResponseMock {
     response_mock
 }
 
+/// Mock builder matching POST `/chat/completions` (Chat Completions wire API).
+fn chat_completions_mock() -> (MockBuilder, ResponseMock) {
+    let response_mock = ResponseMock::new();
+    let mock = Mock::given(method("POST"))
+        .and(path_regex(".*/chat/completions$"))
+        .and(response_mock.clone());
+    (mock, response_mock)
+}
+
+/// Mounts a one-shot SSE response for the Chat Completions endpoint.
+///
+/// Used by tests that exercise the Ambient/ZAI provider, which uses the Chat
+/// Completions wire API instead of the Responses API.
+pub async fn mount_sse_once_chat_completions(
+    server: &MockServer,
+    body: String,
+) -> ResponseMock {
+    let (mock, response_mock) = chat_completions_mock();
+    mock.respond_with(sse_response(body))
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+    response_mock
+}
+
+/// Builds a Chat Completions SSE stream for a single assistant text response.
+///
+/// The Ambient/ZAI provider uses the Chat Completions wire API, so guardian
+/// review subagent tests need SSE payloads in the `choices[].delta.content`
+/// format rather than the Responses API `response.output_item.done` format.
+pub fn chat_completions_sse(model: &str, text: &str) -> String {
+    let id = "chatcmpl-test";
+    let delta = serde_json::json!({
+        "id": id,
+        "model": model,
+        "choices": [{"delta": {"role": "assistant", "content": text}}],
+    });
+    let usage = serde_json::json!({
+        "id": id,
+        "choices": [],
+        "usage": {
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "total_tokens": 2
+        },
+    });
+    format!(
+        "data: {}
+
+data: {}
+
+data: [DONE]
+
+",
+        delta, usage
+    )
+}
+
 pub async fn mount_compact_json_once_match<M>(
     server: &MockServer,
     matcher: M,
